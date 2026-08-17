@@ -72,6 +72,9 @@ trading/config/*.token*
 trading/config/*.key
 trading/config/kis_devlp.yaml
 trading/config/kis_*.yaml
+trading/config/toss_config.yaml
+trading/config/toss_token_*.json
+trading/config/toss_token_*.lock
 
 # Build artifacts
 .next/
