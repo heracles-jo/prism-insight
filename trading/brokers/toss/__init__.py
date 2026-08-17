@@ -12,6 +12,7 @@ client explicitly:
 The trading adapter that turns this into orders arrives in PRD Phase 4.
 """
 
+from trading.brokers.toss.adapter import TossBroker, toss_domestic
 from trading.brokers.toss.auth import DEFAULT_BASE_URL, TossAuth, TossCredentials
 from trading.brokers.toss.client import TossClient
 from trading.brokers.toss.dryrun import DryRunLedger, DryRunTossClient
@@ -29,8 +30,10 @@ __all__ = [
     "TossApiError",
     "TossAuth",
     "TossAuthError",
+    "TossBroker",
     "TossClient",
     "TossCredentials",
     "TossRateLimited",
     "parse_error_response",
+    "toss_domestic",
 ]
