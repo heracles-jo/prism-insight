@@ -153,3 +153,11 @@ prism-btc/state/
 prism-btc/backtest/results/
 !prism-btc/engine/config.py
 *.sqlite.migrate.lock
+
+# Editor swap/backup files. A vim .swp of a secrets file holds its contents,
+# so these must never be committable.
+*.swp
+*.swo
+*.swn
+*~
+.*.swp
