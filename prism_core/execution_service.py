@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -151,7 +150,7 @@ class ExecutionService:
         db_path: str | Path | None = None,
         intent_store: IntentStore | None = None,
     ) -> "ExecutionService":
-        from trading.domestic_stock_trading import AsyncTradingContext
+        from trading.brokers.factory import domestic_context
 
         if db_path is not None and intent_store is not None:
             requested_path = Path(db_path).expanduser().resolve()
@@ -166,7 +165,7 @@ class ExecutionService:
             else IntentStore(db_path) if db_path is not None else None
         )
         return cls(
-            AsyncTradingContext(account_name=account_name),
+            domestic_context(account_name=account_name),
             intent_store=store,
             stance_reporter=_stance_reporter_from_env("KR", account_name),
             stance_market="KR",
@@ -179,27 +178,11 @@ class ExecutionService:
         *,
         db_path: str | Path | None = None,
     ) -> "ExecutionService":
-        try:
-            from trading.us_stock_trading import AsyncUSTradingContext
-        except ModuleNotFoundError as exc:
-            if exc.name != "trading.us_stock_trading":
-                raise
-            # Some long-lived processes import the root ``trading`` package
-            # before switching to the US runtime. Python then keeps that package
-            # cached and cannot discover ``prism-us/trading`` as a subpackage.
-            # Import the existing standalone module path used by the loop tools
-            # instead of deleting or replacing the process-wide package cache.
-            us_trading_dir = Path(__file__).resolve().parents[1] / "prism-us" / "trading"
-            if not us_trading_dir.is_dir():
-                raise
-            path = str(us_trading_dir)
-            if path not in sys.path:
-                sys.path.insert(0, path)
-            from us_stock_trading import AsyncUSTradingContext
+        from trading.brokers.factory import us_context
 
         store = IntentStore(db_path) if db_path is not None else None
         return cls(
-            AsyncUSTradingContext(account_name=account_name),
+            us_context(account_name=account_name),
             intent_store=store,
             stance_reporter=_stance_reporter_from_env("US", account_name),
             stance_market="US",
@@ -233,21 +216,36 @@ class ExecutionService:
         return getattr(self._active_trader, name)
 
     @classmethod
-    def _classify_result(cls, result: Any) -> tuple[str, bool, str]:
+    def _classify_result(cls, result: Any, broker: str = "KIS") -> tuple[str, bool, str]:
+        """Classify a broker result, labelling it with the broker that produced it.
+
+        `broker` defaults to `KIS` so the existing single-argument callers keep
+        their previous behaviour, and so rows written before the label became
+        dynamic stay consistent with rows written after.
+        """
         if not isinstance(result, dict):
-            return "UNKNOWN", False, "KIS"
+            return "UNKNOWN", False, broker
         if result.get("outcome_unknown") is True:
-            return "UNKNOWN", False, "KIS"
+            return "UNKNOWN", False, broker
         order_type = str(result.get("order_type") or "").lower()
         order_no = str(result.get("order_no") or "").upper()
         if order_type.startswith("queued_") or order_no.startswith("PENDING-"):
+            # A queued order never reached any broker, so it is labelled by
+            # where it actually sits rather than by who it was destined for.
             return "QUEUED", True, "LOCAL_QUEUE"
         if result.get("success") or result.get("partial_success"):
-            return "SUBMITTED", True, "KIS"
+            return "SUBMITTED", True, broker
         message = str(result.get("message") or "").lower()
         if any(marker in message for marker in cls._AMBIGUOUS_FAILURE_MARKERS):
-            return "UNKNOWN", False, "KIS"
-        return "FAILED", False, "KIS"
+            return "UNKNOWN", False, broker
+        return "FAILED", False, broker
+
+    @property
+    def _broker_label(self) -> str:
+        """Which broker the active trader is, for the intent ledger."""
+        from trading.brokers.factory import broker_label
+
+        return broker_label(self._active_trader)
 
     @staticmethod
     def _with_intent_metadata(
@@ -353,7 +351,7 @@ class ExecutionService:
                 )
             raise OrderOutcomeUnknown(intent.id, cause=exc) from exc
 
-        status, accepted, broker = self._classify_result(result)
+        status, accepted, broker = self._classify_result(result, self._broker_label)
         try:
             await asyncio.to_thread(
                 self._intent_store.record_result,
@@ -521,7 +519,7 @@ class ExecutionService:
                     type(persistence_error).__name__,
                 )
             raise OrderOutcomeUnknown(intent.id, cause=exc) from exc
-        status, accepted, broker = self._classify_result(result)
+        status, accepted, broker = self._classify_result(result, self._broker_label)
         try:
             self._intent_store.record_result(
                 intent,
