@@ -182,7 +182,7 @@ When **토스로 미국 주식을 소수점 단위로 보유하고 있을 때**,
 > ⚠️ **Phase 1 전제 정정**: PRD는 `normalize_checked_holding`이 US 소수점을 막는 벽이라고 가정했으나, 조사 결과 **US 경로는 그 함수를 쓰지 않는다** (`prism-us`는 `get_holding_quantity`를 사용). 호출자 3곳은 전부 KR 전용(`[POSITION-PENDING][KR]`)이며 각자 정수를 재검사한다. 따라서 Phase 1의 가치는 'US 해방'이 아니라 ①계약이 소수를 표현 가능하게 하고 ②KR이 소수를 안전하게 거부함을 고정하는 것이다. **버그의 실제 해소는 Phase 2다.**
 | 2 | 소수 보유 정확 인식 | 어댑터 `Decimal` 파싱, 절삭 제거, 시장별 분기 | complete | - | 1 | - |
 | 3 | 소수 매도 | `quantity` 소수 MARKET 매도, 창 검사, 6자리 절삭 | complete | with 4 | 2 | - |
-| 4 | 금액 기반 매수 | `orderAmount` 매수, 창 검사, 체결 수량 되읽기 | pending | with 3 | 2 | - |
+| 4 | 금액 기반 매수 | `orderAmount` 매수, 창 검사, 체결 수량 되읽기 | complete | with 3 | 2 | - |
 | 5 | 창 밖 강등 규칙 | 정수 강등, 1주 미만 처리 확정 | pending | - | 3, 4 | - |
 | 6 | 추적 DB 정합성 | 소수 포지션과 `us_stock_holdings` 모델 조정 | pending | - | 5 | - |
 | 7 | 문서 | 설정 가이드·CLAUDE.md에 소수점 제약 반영 | pending | - | 6 | - |

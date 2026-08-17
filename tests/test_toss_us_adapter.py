@@ -642,3 +642,121 @@ def test_an_unavailable_calendar_closes_the_fractional_window():
         {("GET", "/api/v1/market-calendar/US"): BrokerUnavailable("down")}
     )
     assert broker.fractional_window_open() is False
+
+
+# ── Amount-based buying (PRD Phase 4) ────────────────────────────────────────
+
+
+def test_a_budget_below_one_share_buys_by_amount():
+    """Previously a dead end: floor(100/185.5) is 0, so nothing was bought."""
+    now = _now_kst()
+    broker, client = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _calendar_around(
+            now, opens_delta_h=-1, closes_delta_h=5
+        ),
+        ("GET", "/api/v1/prices"): PRICE_AAPL,
+        ("POST", "/api/v1/orders"): {"orderId": "ord-amt"},
+        ("GET", "/api/v1/orders/ord-amt"): us_order(order_id="ord-amt", quantity="0.539083"),
+    })
+    broker.buy_amount = 100
+
+    result = asyncio.run(broker.async_buy_stock("AAPL"))
+
+    posted = next(c[3] for c in client.calls if c[0] == "POST")
+    assert posted["orderType"] == "MARKET"
+    assert posted["orderAmount"] == "100.00"
+    assert "quantity" not in posted, "send exactly one of quantity or orderAmount"
+    assert "price" not in posted, "a price with a market order is rejected"
+    assert result["success"] is True
+
+
+def test_an_affordable_whole_share_still_buys_by_quantity():
+    """The amount path must not take over ordinary buying."""
+    now = _now_kst()
+    broker, client = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _calendar_around(
+            now, opens_delta_h=-1, closes_delta_h=5
+        ),
+        ("GET", "/api/v1/prices"): PRICE_AAPL,
+        ("POST", "/api/v1/orders"): {"orderId": "ord-whole"},
+        ("GET", "/api/v1/orders/ord-whole"): us_order(order_id="ord-whole", quantity="5"),
+    })
+    broker.buy_amount = 1000
+
+    asyncio.run(broker.async_buy_stock("AAPL"))
+
+    posted = next(c[3] for c in client.calls if c[0] == "POST")
+    assert posted["orderType"] == "LIMIT"
+    assert posted["quantity"] == "5"
+    assert "orderAmount" not in posted
+
+
+def test_an_amount_buy_outside_the_window_fails_with_the_reason():
+    now = _now_kst()
+    broker, client = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _calendar_around(
+            now, opens_delta_h=-1, closes_delta_h=0.5
+        ),
+        ("GET", "/api/v1/prices"): PRICE_AAPL,
+    })
+    broker.buy_amount = 100
+
+    result = asyncio.run(broker.async_buy_stock("AAPL"))
+
+    assert result["success"] is False
+    assert "amount-based order cannot be placed now" in result["message"]
+    assert not [c for c in client.calls if c[0] == "POST"]
+
+
+def test_a_kr_budget_below_one_share_is_still_a_plain_refusal():
+    """Toss has no amount-based route for domestic stocks."""
+    from trading.brokers.toss.adapter import TossBroker
+
+    client = StubClient({
+        ("GET", "/api/v1/stocks"): [{"symbol": "005930", "name": "삼성전자"}],
+        ("GET", "/api/v1/prices"): [{"symbol": "005930", "name": "삼성전자",
+                                     "lastPrice": "274500"}],
+    })
+    kr = TossBroker(client, market="KR", buy_amount=1000)
+
+    result = asyncio.run(kr.async_buy_stock("005930"))
+
+    assert result["success"] is False
+    assert "US stocks only" in result["message"]
+    assert not [c for c in client.calls if c[0] == "POST"]
+
+
+def test_the_order_amount_is_truncated_to_cents():
+    now = _now_kst()
+    broker, client = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _calendar_around(
+            now, opens_delta_h=-1, closes_delta_h=5
+        ),
+        ("GET", "/api/v1/prices"): PRICE_AAPL,
+        ("POST", "/api/v1/orders"): {"orderId": "ord-amt"},
+        ("GET", "/api/v1/orders/ord-amt"): us_order(order_id="ord-amt", quantity="0.5"),
+    })
+
+    asyncio.run(broker.async_buy_stock("AAPL", buy_amount=100.987))
+
+    posted = next(c[3] for c in client.calls if c[0] == "POST")
+    assert posted["orderAmount"] == "100.98", "rounding up could exceed the budget"
+
+
+def test_the_filled_quantity_comes_from_the_read_back():
+    """orderAmount fixes the money; the share count is only known after filling."""
+    from decimal import Decimal
+
+    now = _now_kst()
+    broker, _ = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _calendar_around(
+            now, opens_delta_h=-1, closes_delta_h=5
+        ),
+        ("GET", "/api/v1/prices"): PRICE_AAPL,
+        ("POST", "/api/v1/orders"): {"orderId": "ord-amt"},
+        ("GET", "/api/v1/orders/ord-amt"): us_order(order_id="ord-amt", quantity="0.539083"),
+    })
+    broker.buy_amount = 100
+
+    result = asyncio.run(broker.async_buy_stock("AAPL"))
+    assert result["quantity"] == Decimal("0.539083")

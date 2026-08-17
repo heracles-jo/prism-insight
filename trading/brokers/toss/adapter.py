@@ -172,12 +172,10 @@ class TossBroker:
         current_price = price_info["current_price"]
         quantity = math.floor(amount / current_price) if current_price else 0
         if quantity <= 0:
-            return self._outcome(
-                stock_code,
-                success=False,
-                current_price=current_price,
-                message=f"Buyable quantity is 0 (buy amount: {amount:,})",
-            )
+            # The budget cannot reach one whole share. On US that is not a dead
+            # end: Toss sells fractions by amount, which is how a $100 budget
+            # buys a $185 stock at all. Everywhere else it stays a refusal.
+            return self._buy_by_amount(stock_code, amount, current_price)
 
         # KIS sends the current price as the limit when none is given, and the
         # tracking logic is tuned to that behaviour; diverging here would make
@@ -190,6 +188,70 @@ class TossBroker:
             quantity=quantity,
             limit_price=effective_limit,
             reference_price=current_price,
+        )
+
+    def _buy_by_amount(
+        self, stock_code: str, amount: float, reference_price: float
+    ) -> dict[str, Any]:
+        """Buy a fraction of a share by spending a fixed amount.
+
+        Toss confirms the quantity only after it fills — `orderAmount` fixes the
+        money and lets the share count float — so the fill is read back rather
+        than assumed, the same as every other order here.
+        """
+        if self.market != "US":
+            return self._outcome(
+                stock_code,
+                success=False,
+                current_price=reference_price,
+                message=(
+                    f"Buyable quantity is 0 (buy amount: {amount:,}). Toss accepts "
+                    "amount-based orders on US stocks only; domestic orders must "
+                    "reach one whole share."
+                ),
+            )
+        if not self.fractional_window_open():
+            return self._outcome(
+                stock_code,
+                success=False,
+                current_price=reference_price,
+                message=(
+                    f"Buyable quantity is 0 (buy amount: {amount:,}) and an "
+                    "amount-based order cannot be placed now: Toss accepts them "
+                    "only from the regular session open until an hour before "
+                    "its close."
+                ),
+            )
+
+        order_amount = _dec(amount).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+        if order_amount <= 0:
+            return self._outcome(
+                stock_code,
+                success=False,
+                current_price=reference_price,
+                message=f"Order amount resolved to 0 (buy amount: {amount:,})",
+            )
+
+        body = {
+            "clientOrderId": f"prism-{uuid.uuid4().hex[:24]}",
+            "symbol": stock_code,
+            "side": "BUY",
+            # Amount-based orders are market orders; a price is rejected.
+            "orderType": "MARKET",
+            "orderAmount": format(order_amount, "f"),
+        }
+        logger.info(
+            "[TOSS] BUY %s by amount %s (a whole share costs %s)",
+            stock_code, body["orderAmount"], reference_price,
+        )
+
+        return self._dispatch(
+            body,
+            stock_code=stock_code,
+            side="BUY",
+            # Unknown until it fills; the read-back supplies the real number.
+            quantity=Decimal("0"),
+            reference_price=reference_price,
         )
 
     def _sell(
@@ -459,6 +521,30 @@ class TossBroker:
             body["orderType"] = "LIMIT"
             body["price"] = self._format_price(limit_price)
 
+        return self._dispatch(
+            body,
+            stock_code=stock_code,
+            side=side,
+            quantity=quantity,
+            reference_price=reference_price,
+        )
+
+    def _dispatch(
+        self,
+        body: dict[str, Any],
+        *,
+        stock_code: str,
+        side: str,
+        quantity: int | Decimal,
+        reference_price: float,
+    ) -> dict[str, Any]:
+        """Send an order body, read the fill back, and shape the outcome.
+
+        Shared by the quantity-based and amount-based paths so both classify a
+        refusal, an ambiguous failure and an unreadable status identically. Two
+        copies of this would eventually disagree about which failures are safe
+        to retry.
+        """
         try:
             created = self._client.request(
                 "POST",
@@ -518,7 +604,6 @@ class TossBroker:
             reference_price=reference_price,
             detail=detail,
         )
-
     def _read_back(self, order_id: str) -> dict[str, Any] | None:
         """Creation returns ids only; the fill has to be fetched separately."""
         try:
