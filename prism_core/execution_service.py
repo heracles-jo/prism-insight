@@ -12,6 +12,7 @@ import asyncio
 import logging
 import os
 import threading
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -23,16 +24,42 @@ _stance_count_lock = threading.Lock()
 _stance_set_counts = {"KR": 0, "US": 0}
 
 
-def normalize_checked_holding(result: Any) -> tuple[str, int | None]:
-    """Return only authoritative HELD/FLAT results; collapse malformed data."""
+# A quantity is a whole number of shares or, where the broker supports fractional
+# shares, an exact decimal. `float` is excluded on purpose: its drift would leave
+# a sell-everything order a sliver short and the position would never close.
+_QUANTITY_TYPES = (int, Decimal)
+
+
+def _is_quantity(value: Any) -> bool:
+    """True for a usable share count.
+
+    Uses exact type identity rather than `isinstance` because `bool` subclasses
+    `int` — `isinstance(True, int)` is True, so a malformed `("HELD", True)`
+    would otherwise be accepted as a holding of one share.
+    """
+    return type(value) in _QUANTITY_TYPES
+
+
+def normalize_checked_holding(result: Any) -> tuple[str, int | Decimal | None]:
+    """Return only authoritative HELD/FLAT results; collapse malformed data.
+
+    A `Decimal` quantity is accepted so a fractional Toss US position survives
+    this gate instead of being reported as flat. Note that the KR callers of this
+    function (`stock_tracking_agent`, `hardstop_seller`, `trend_exit_seller`)
+    each re-check for `int` and refuse anything else. That is deliberate and
+    correct: domestic shares are never fractional, so a decimal arriving there
+    means something is wrong and stopping beats guessing.
+    """
 
     if not isinstance(result, tuple) or len(result) != 2:
         return "UNKNOWN", None
     state = str(result[0] or "UNKNOWN").upper()
     quantity = result[1]
-    if state == "HELD" and type(quantity) is int and quantity > 0:
+    if state == "HELD" and _is_quantity(quantity) and quantity > 0:
         return "HELD", quantity
-    if state == "FLAT" and type(quantity) is int and quantity == 0:
+    if state == "FLAT" and _is_quantity(quantity) and quantity == 0:
+        # Normalised to int 0 regardless of input type: "flat" is one state, and
+        # callers compare it against 0 rather than carrying the broker's typing.
         return "FLAT", 0
     if state == "UNKNOWN" and quantity is None:
         return "UNKNOWN", None

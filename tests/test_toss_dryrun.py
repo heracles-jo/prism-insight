@@ -242,12 +242,53 @@ def test_selling_more_than_held_is_refused(dryrun):
     assert excinfo.value.code == "insufficient-quantity"
 
 
-def test_amount_based_orders_are_refused_as_out_of_scope(dryrun):
+def test_an_amount_based_order_buys_a_fraction(dryrun):
+    """orderAmount fixes the money and lets the share count follow the price."""
+    client, _, ledger = dryrun
+
+    client.post("/api/v1/orders", json_body={
+        "symbol": "AAPL", "side": "BUY", "orderType": "MARKET", "orderAmount": "100.00"
+    })
+
+    quantity, _ = ledger.position("AAPL")
+    # 100.00 / 185.5, truncated to six places.
+    assert quantity == Decimal("0.539083")
+
+
+def test_an_amount_order_needs_a_market_order(dryrun):
+    from trading.brokers.toss.errors import TossApiError
+
     client, _, _ = dryrun
 
-    with pytest.raises(BrokerUnsupported):
+    with pytest.raises(TossApiError):
         client.post("/api/v1/orders", json_body={
-            "symbol": "AAPL", "side": "BUY", "orderType": "MARKET", "orderAmount": "100.5"
+            "symbol": "AAPL", "side": "BUY", "orderType": "LIMIT",
+            "orderAmount": "100.00", "price": "185.5",
+        })
+
+
+def test_an_amount_order_is_refused_for_domestic(dryrun):
+    """Toss takes amount-based orders on US stocks only."""
+    from trading.brokers.toss.errors import TossApiError
+
+    client, _, _ = dryrun
+
+    with pytest.raises(TossApiError):
+        client.post("/api/v1/orders", json_body={
+            "symbol": "005930", "side": "BUY", "orderType": "MARKET",
+            "orderAmount": "100000",
+        })
+
+
+def test_quantity_and_amount_are_mutually_exclusive(dryrun):
+    from trading.brokers.toss.errors import TossApiError
+
+    client, _, _ = dryrun
+
+    with pytest.raises(TossApiError):
+        client.post("/api/v1/orders", json_body={
+            "symbol": "AAPL", "side": "BUY", "orderType": "MARKET",
+            "quantity": "1", "orderAmount": "100.00",
         })
 
 

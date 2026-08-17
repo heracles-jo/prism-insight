@@ -26,6 +26,10 @@ _BROKER_ENV = (
     "TOSS_CLIENT_SECRET",
     "TOSS_ACCOUNT_SEQ",
     "TOSS_BASE_URL",
+    # Also the source order: a local `.env` putting Toss first makes the chain
+    # answer before the fallback under test is ever reached, so tests asserting
+    # "KRX fails, FinanceDataReader takes over" fail on a configured machine.
+    "PRISM_MARKET_DATA_SOURCES",
 )
 
 
@@ -34,4 +38,19 @@ def _neutral_broker_env(monkeypatch):
     """Default every test to the unconfigured state: KIS, demo, no Toss."""
     for name in _BROKER_ENV:
         monkeypatch.delenv(name, raising=False)
+
+    # The chain is cached in a module global, so clearing the variable is not
+    # enough once something has already built a Toss-first chain. Drop the cache
+    # both before and after, so neither a leaked `.env` nor one test's ordering
+    # decides another test's sources.
+    _reset_market_data_chain()
     yield
+    _reset_market_data_chain()
+
+
+def _reset_market_data_chain():
+    try:
+        from cores.market_data import set_default_chain
+    except Exception:  # noqa: BLE001 - market data is optional for most tests
+        return
+    set_default_chain(None)

@@ -23,6 +23,7 @@ Business rejection is a value; only infrastructure failure is an exception.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any, NotRequired, Protocol, TypedDict, runtime_checkable
 
 
@@ -79,7 +80,12 @@ class OrderOutcome(TypedDict):
 # Holding state is a three-valued answer, never a bare integer. "FLAT" means the
 # broker said zero; "UNKNOWN" means the broker did not say. Selling on a zero
 # that was really a failed balance query is the mistake this prevents.
-HoldingState = tuple[str, int | None]
+#
+# The quantity is `Decimal` as well as `int` because a Toss US account can hold
+# a fraction of a share, and truncating that to an integer turns a real position
+# into "you have none". `float` is deliberately excluded: 0.1 + 0.2 drift would
+# leave a sell-everything order short by a sliver, so the position never closes.
+HoldingState = tuple[str, int | Decimal | None]
 
 
 @runtime_checkable
@@ -138,11 +144,21 @@ class BrokerPort(Protocol):
     def get_account_summary(self) -> dict[str, Any]:
         """Cash and valuation totals. `{}` when the query fails."""
 
-    def get_holding_quantity(self, symbol: str, /, *args: Any, **kwargs: Any) -> int:
-        """Held quantity, collapsing failure to 0. Prefer the checked variant."""
+    def get_holding_quantity(self, symbol: str, /, *args: Any, **kwargs: Any) -> int | Decimal:
+        """Held quantity, collapsing an unreadable balance to 0.
+
+        May be a `Decimal` where the broker supports fractional shares. Prefer
+        the checked variant, which also distinguishes "flat" from "unreadable".
+        """
 
     def get_holding_quantity_checked(self, symbol: str, /, *args: Any, **kwargs: Any) -> HoldingState:
-        """Held quantity that distinguishes a real zero from a failed query."""
+        """Held quantity that distinguishes a real zero from a failed query.
+
+        May return a `Decimal` where the broker supports fractional shares
+        (Toss US). Callers that can only act on whole shares must check the type
+        and refuse rather than coerce — `int(Decimal("0.44"))` is 0, which reads
+        as "flat" for a position that is actually held.
+        """
 
     def calculate_buy_quantity(self, symbol: str, /, *args: Any, **kwargs: Any) -> int:
         """How many shares the configured buy amount affords."""

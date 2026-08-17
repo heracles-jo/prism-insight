@@ -87,7 +87,8 @@ class StubClient:
         return [c for c in self.calls if c[0] == "POST"]
 
 
-US_STOCK_INFO = [{"symbol": "AAPL", "name": "애플", "market": "NASDAQ"}]
+US_STOCK_INFO = [{"symbol": "AAPL", "name": "애플", "market": "NASDAQ"},
+                 {"symbol": "JEPI", "name": "JEPI", "market": "NYSE"}]
 
 
 def make_us_broker(responses=None):
@@ -360,3 +361,508 @@ def test_us_reserved_orders_still_raise_unsupported():
     broker, _ = make_us_broker()
     with pytest.raises(BrokerUnsupported):
         broker.buy_reserved_order("AAPL", limit_price=185.5)
+
+
+# ── Fractional holdings (PRD Phase 2) ────────────────────────────────────────
+
+
+FRACTIONAL_HOLDINGS = {
+    "items": [
+        {"symbol": "JEPI", "name": "JEPI", "currency": "USD", "quantity": "0.44519",
+         "lastPrice": "58.2", "averagePurchasePrice": "57.0",
+         "marketValue": {"amount": "25.91"}, "profitLoss": {"amount": "0.53", "rate": "0.0210"}},
+        {"symbol": "TQQQ", "name": "TQQQ", "currency": "USD", "quantity": "1.68024",
+         "lastPrice": "72.0", "averagePurchasePrice": "68.4",
+         "marketValue": {"amount": "120.98"}, "profitLoss": {"amount": "6.05", "rate": "0.0526"}},
+        {"symbol": "005930", "name": "삼성전자", "currency": "KRW", "quantity": "2",
+         "lastPrice": "274500", "averagePurchasePrice": "270000",
+         "marketValue": {"amount": "549000"}, "profitLoss": {"amount": "9000", "rate": "0.0166"}},
+    ]
+}
+
+
+def test_a_sub_share_holding_is_not_reported_as_flat():
+    """The bug this phase exists to remove: 0.44519 shares read as ("FLAT", 0)."""
+    from decimal import Decimal
+
+    broker, _ = make_us_broker({("GET", "/api/v1/holdings"): FRACTIONAL_HOLDINGS})
+
+    assert broker.get_holding_quantity_checked("JEPI") == ("HELD", Decimal("0.44519"))
+
+
+def test_every_fractional_holding_survives_the_portfolio():
+    """Four of five real holdings used to disappear entirely."""
+    broker, _ = make_us_broker({("GET", "/api/v1/holdings"): FRACTIONAL_HOLDINGS})
+
+    symbols = [r["stock_code"] for r in broker.get_portfolio()]
+    assert symbols == ["JEPI", "TQQQ"]
+
+
+def test_quantities_keep_full_precision():
+    """A float round-trip would lose digits and strand a sliver on a full sell."""
+    from decimal import Decimal
+
+    broker, _ = make_us_broker({("GET", "/api/v1/holdings"): FRACTIONAL_HOLDINGS})
+
+    rows = {r["stock_code"]: r["quantity"] for r in broker.get_portfolio()}
+    assert rows["TQQQ"] == Decimal("1.68024")
+    assert isinstance(rows["TQQQ"], Decimal)
+
+
+def test_a_fractional_holding_passes_the_production_normaliser():
+    """It must survive the shared gate, not just the adapter."""
+    from decimal import Decimal
+
+    from prism_core.execution_service import normalize_checked_holding
+
+    broker, _ = make_us_broker({("GET", "/api/v1/holdings"): FRACTIONAL_HOLDINGS})
+
+    assert normalize_checked_holding(
+        broker.get_holding_quantity_checked("JEPI")
+    ) == ("HELD", Decimal("0.44519"))
+
+
+def test_kr_quantities_stay_integers():
+    """KR shares are always whole; the shared code path must not change type."""
+    from trading.brokers.toss.adapter import TossBroker
+
+    client = StubClient({("GET", "/api/v1/holdings"): FRACTIONAL_HOLDINGS})
+    kr = TossBroker(client, market="KR")
+
+    rows = kr.get_portfolio()
+    assert [r["stock_code"] for r in rows] == ["005930"]
+    assert rows[0]["quantity"] == 2
+    assert type(rows[0]["quantity"]) is int
+    assert kr.get_holding_quantity_checked("005930") == ("HELD", 2)
+
+
+def test_an_unexpected_fractional_kr_quantity_is_logged(caplog):
+    """Should be unreachable — Toss rejects domestic fractional orders — but a
+    silent truncation would be worse than a line in the log."""
+    import logging
+
+    from trading.brokers.toss.adapter import TossBroker
+
+    client = StubClient({("GET", "/api/v1/holdings"): {
+        "items": [{"symbol": "005930", "name": "삼성전자", "currency": "KRW",
+                   "quantity": "2.5", "lastPrice": "274500",
+                   "averagePurchasePrice": "270000",
+                   "marketValue": {"amount": "686250"},
+                   "profitLoss": {"amount": "11250", "rate": "0.0166"}}]
+    }})
+    kr = TossBroker(client, market="KR")
+
+    with caplog.at_level(logging.WARNING):
+        rows = kr.get_portfolio()
+
+    assert type(rows[0]["quantity"]) is int
+    assert rows[0]["quantity"] == 2
+    assert "fractional KR quantity" in caplog.text
+
+
+def test_get_holding_quantity_does_not_collapse_a_fraction_to_zero():
+    """Returning 0 here would recreate the "you hold nothing" bug."""
+    from decimal import Decimal
+
+    broker, _ = make_us_broker({("GET", "/api/v1/holdings"): FRACTIONAL_HOLDINGS})
+
+    assert broker.get_holding_quantity("JEPI") == Decimal("0.44519")
+
+
+def test_a_genuinely_absent_symbol_is_still_flat():
+    broker, _ = make_us_broker({("GET", "/api/v1/holdings"): FRACTIONAL_HOLDINGS})
+
+    assert broker.get_holding_quantity_checked("NVDA") == ("FLAT", 0)
+    assert broker.get_holding_quantity("NVDA") == 0
+
+
+# ── Fractional selling (PRD Phase 3) ─────────────────────────────────────────
+
+
+def _calendar_around(now, *, opens_delta_h, closes_delta_h):
+    """A calendar whose regular session brackets `now` by the given offsets."""
+    import datetime as _dt
+
+    opens = now + _dt.timedelta(hours=opens_delta_h)
+    closes = now + _dt.timedelta(hours=closes_delta_h)
+    return {
+        "today": {
+            "date": str(now.date()),
+            "dayMarket": None,
+            "preMarket": None,
+            "regularMarket": {"startTime": opens.isoformat(), "endTime": closes.isoformat()},
+            "afterMarket": None,
+        },
+        "previousBusinessDay": {"date": str(now.date())},
+        "nextBusinessDay": {"date": str(now.date())},
+    }
+
+
+def _now_kst():
+    import datetime as _dt
+
+    return _dt.datetime.now(KST)
+
+
+PRICE_JEPI = [{"symbol": "JEPI", "name": "JEPI", "lastPrice": "58.2",
+               "changeRate": "0.01", "volume": "1000"}]
+
+
+def test_the_fractional_window_closes_an_hour_before_the_session_does():
+    """A position can be visible and unsellable at the same time."""
+    now = _now_kst()
+    broker, _ = make_us_broker({
+        # Session opened 1h ago, closes in 30 minutes → inside the session but
+        # past the fractional cutoff.
+        ("GET", "/api/v1/market-calendar/US"): _calendar_around(
+            now, opens_delta_h=-1, closes_delta_h=0.5
+        ),
+    })
+
+    assert broker.open_us_session() == "regularMarket"
+    assert broker.fractional_window_open() is False
+
+
+def test_the_fractional_window_is_open_early_in_the_session():
+    now = _now_kst()
+    broker, _ = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _calendar_around(
+            now, opens_delta_h=-1, closes_delta_h=5
+        ),
+    })
+
+    assert broker.fractional_window_open() is True
+
+
+def test_a_fractional_sell_goes_out_as_market_without_a_price():
+    """Toss takes fractional quantity on MARKET only, and rejects a price with it."""
+    now = _now_kst()
+    broker, client = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _calendar_around(
+            now, opens_delta_h=-1, closes_delta_h=5
+        ),
+        ("GET", "/api/v1/prices"): PRICE_JEPI,
+        ("GET", "/api/v1/holdings"): FRACTIONAL_HOLDINGS,
+        ("POST", "/api/v1/orders"): {"orderId": "ord-frac"},
+        ("GET", "/api/v1/orders/ord-frac"): us_order(order_id="ord-frac", quantity="0.44519"),
+    })
+
+    result = asyncio.run(broker.async_sell_stock("JEPI"))
+
+    posted = next(c[3] for c in client.calls if c[0] == "POST")
+    assert posted["orderType"] == "MARKET"
+    assert "price" not in posted, "a price with a market order is rejected outright"
+    assert posted["quantity"] == "0.44519"
+    assert posted["side"] == "SELL"
+    assert result["success"] is True
+
+
+def test_a_whole_share_sell_still_goes_out_as_limit():
+    """The fractional path must not change ordinary selling."""
+    now = _now_kst()
+    broker, client = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _calendar_around(
+            now, opens_delta_h=-1, closes_delta_h=5
+        ),
+        ("GET", "/api/v1/prices"): PRICE_AAPL,
+        ("GET", "/api/v1/holdings"): {"items": [
+            {"symbol": "AAPL", "name": "애플", "currency": "USD", "quantity": "3",
+             "lastPrice": "185.5", "averagePurchasePrice": "180",
+             "marketValue": {"amount": "556.5"}, "profitLoss": {"amount": "16.5", "rate": "0.03"}}
+        ]},
+        ("POST", "/api/v1/orders"): {"orderId": "ord-whole"},
+        ("GET", "/api/v1/orders/ord-whole"): us_order(order_id="ord-whole", quantity="3"),
+    })
+
+    asyncio.run(broker.async_sell_stock("AAPL"))
+
+    posted = next(c[3] for c in client.calls if c[0] == "POST")
+    assert posted["orderType"] == "LIMIT"
+    assert posted["price"] == "185.5"
+
+
+def test_a_fractional_sell_outside_the_window_fails_explicitly():
+    """PRD Phase 3 success signal: refused, not queued, not silently rounded."""
+    now = _now_kst()
+    broker, client = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _calendar_around(
+            now, opens_delta_h=-1, closes_delta_h=0.5
+        ),
+        ("GET", "/api/v1/prices"): PRICE_JEPI,
+        ("GET", "/api/v1/holdings"): FRACTIONAL_HOLDINGS,
+    })
+
+    result = asyncio.run(broker.async_sell_stock("JEPI"))
+
+    assert result["success"] is False
+    assert "outcome_unknown" not in result, "it provably never left the process"
+    assert "fractional" in result["message"]
+    assert not [c for c in client.calls if c[0] == "POST"]
+
+
+def test_a_fractional_quantity_is_truncated_to_six_places_downward():
+    """Rounding up would ask to sell more than is held."""
+    from decimal import Decimal
+
+    broker, _ = make_us_broker()
+
+    assert broker._round_fractional(Decimal("0.4451949999")) == Decimal("0.445194")
+    assert broker._round_fractional(Decimal("0.9999999")) == Decimal("0.999999")
+
+
+def test_a_fractional_kr_order_is_refused_before_it_is_sent():
+    """Toss rejects domestic fractional outright; say so rather than relay it."""
+    from decimal import Decimal
+
+    from trading.brokers.toss.adapter import TossBroker
+
+    client = StubClient({})
+    kr = TossBroker(client, market="KR")
+
+    refusal = kr._refuse_fractional("005930", "SELL", Decimal("0.5"), 70000.0)
+    assert refusal is not None and refusal["success"] is False
+    assert "US orders only" in refusal["message"]
+
+
+def test_a_fractional_buy_is_refused_and_points_at_the_amount_route():
+    from decimal import Decimal
+
+    broker, _ = make_us_broker()
+
+    refusal = broker._refuse_fractional("AAPL", "BUY", Decimal("0.5"), 185.5)
+    assert refusal is not None and refusal["success"] is False
+    assert "orderAmount" in refusal["message"]
+
+
+def test_an_unavailable_calendar_closes_the_fractional_window():
+    """Refusing beats guessing that the window is open."""
+    from trading.brokers.base import BrokerUnavailable
+
+    broker, _ = make_us_broker(
+        {("GET", "/api/v1/market-calendar/US"): BrokerUnavailable("down")}
+    )
+    assert broker.fractional_window_open() is False
+
+
+# ── Amount-based buying (PRD Phase 4) ────────────────────────────────────────
+
+
+def test_a_budget_below_one_share_buys_by_amount():
+    """Previously a dead end: floor(100/185.5) is 0, so nothing was bought."""
+    now = _now_kst()
+    broker, client = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _calendar_around(
+            now, opens_delta_h=-1, closes_delta_h=5
+        ),
+        ("GET", "/api/v1/prices"): PRICE_AAPL,
+        ("POST", "/api/v1/orders"): {"orderId": "ord-amt"},
+        ("GET", "/api/v1/orders/ord-amt"): us_order(order_id="ord-amt", quantity="0.539083"),
+    })
+    broker.buy_amount = 100
+
+    result = asyncio.run(broker.async_buy_stock("AAPL"))
+
+    posted = next(c[3] for c in client.calls if c[0] == "POST")
+    assert posted["orderType"] == "MARKET"
+    assert posted["orderAmount"] == "100.00"
+    assert "quantity" not in posted, "send exactly one of quantity or orderAmount"
+    assert "price" not in posted, "a price with a market order is rejected"
+    assert result["success"] is True
+
+
+def test_an_affordable_whole_share_still_buys_by_quantity():
+    """The amount path must not take over ordinary buying."""
+    now = _now_kst()
+    broker, client = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _calendar_around(
+            now, opens_delta_h=-1, closes_delta_h=5
+        ),
+        ("GET", "/api/v1/prices"): PRICE_AAPL,
+        ("POST", "/api/v1/orders"): {"orderId": "ord-whole"},
+        ("GET", "/api/v1/orders/ord-whole"): us_order(order_id="ord-whole", quantity="5"),
+    })
+    broker.buy_amount = 1000
+
+    asyncio.run(broker.async_buy_stock("AAPL"))
+
+    posted = next(c[3] for c in client.calls if c[0] == "POST")
+    assert posted["orderType"] == "LIMIT"
+    assert posted["quantity"] == "5"
+    assert "orderAmount" not in posted
+
+
+def test_an_amount_buy_outside_the_window_fails_with_the_reason():
+    now = _now_kst()
+    broker, client = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _calendar_around(
+            now, opens_delta_h=-1, closes_delta_h=0.5
+        ),
+        ("GET", "/api/v1/prices"): PRICE_AAPL,
+    })
+    broker.buy_amount = 100
+
+    result = asyncio.run(broker.async_buy_stock("AAPL"))
+
+    assert result["success"] is False
+    assert "amount-based order cannot be placed now" in result["message"]
+    assert not [c for c in client.calls if c[0] == "POST"]
+
+
+def test_a_kr_budget_below_one_share_is_still_a_plain_refusal():
+    """Toss has no amount-based route for domestic stocks."""
+    from trading.brokers.toss.adapter import TossBroker
+
+    client = StubClient({
+        ("GET", "/api/v1/stocks"): [{"symbol": "005930", "name": "삼성전자"}],
+        ("GET", "/api/v1/prices"): [{"symbol": "005930", "name": "삼성전자",
+                                     "lastPrice": "274500"}],
+    })
+    kr = TossBroker(client, market="KR", buy_amount=1000)
+
+    result = asyncio.run(kr.async_buy_stock("005930"))
+
+    assert result["success"] is False
+    assert "US stocks only" in result["message"]
+    assert not [c for c in client.calls if c[0] == "POST"]
+
+
+def test_the_order_amount_is_truncated_to_cents():
+    now = _now_kst()
+    broker, client = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _calendar_around(
+            now, opens_delta_h=-1, closes_delta_h=5
+        ),
+        ("GET", "/api/v1/prices"): PRICE_AAPL,
+        ("POST", "/api/v1/orders"): {"orderId": "ord-amt"},
+        ("GET", "/api/v1/orders/ord-amt"): us_order(order_id="ord-amt", quantity="0.5"),
+    })
+
+    asyncio.run(broker.async_buy_stock("AAPL", buy_amount=100.987))
+
+    posted = next(c[3] for c in client.calls if c[0] == "POST")
+    assert posted["orderAmount"] == "100.98", "rounding up could exceed the budget"
+
+
+def test_the_filled_quantity_comes_from_the_read_back():
+    """orderAmount fixes the money; the share count is only known after filling."""
+    from decimal import Decimal
+
+    now = _now_kst()
+    broker, _ = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _calendar_around(
+            now, opens_delta_h=-1, closes_delta_h=5
+        ),
+        ("GET", "/api/v1/prices"): PRICE_AAPL,
+        ("POST", "/api/v1/orders"): {"orderId": "ord-amt"},
+        ("GET", "/api/v1/orders/ord-amt"): us_order(order_id="ord-amt", quantity="0.539083"),
+    })
+    broker.buy_amount = 100
+
+    result = asyncio.run(broker.async_buy_stock("AAPL"))
+    assert result["quantity"] == Decimal("0.539083")
+
+
+# ── Downgrade outside the fractional window (PRD Phase 5) ────────────────────
+
+
+CLOSED_WINDOW_HOLDINGS = {
+    "items": [
+        {"symbol": "AAPL", "name": "애플", "currency": "USD", "quantity": "1.68024",
+         "lastPrice": "185.5", "averagePurchasePrice": "180",
+         "marketValue": {"amount": "311.7"}, "profitLoss": {"amount": "9.3", "rate": "0.03"}},
+        {"symbol": "JEPI", "name": "JEPI", "currency": "USD", "quantity": "0.44519",
+         "lastPrice": "58.2", "averagePurchasePrice": "57",
+         "marketValue": {"amount": "25.91"}, "profitLoss": {"amount": "0.53", "rate": "0.02"}},
+    ]
+}
+
+
+def _closed_fractional_window(now):
+    """Inside the regular session but past the fractional cutoff."""
+    return _calendar_around(now, opens_delta_h=-1, closes_delta_h=0.5)
+
+
+def test_a_position_over_one_share_sells_its_whole_part_when_the_window_shuts():
+    """Selling part of a stop-loss beats selling none."""
+    now = _now_kst()
+    broker, client = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _closed_fractional_window(now),
+        ("GET", "/api/v1/prices"): PRICE_AAPL,
+        ("GET", "/api/v1/holdings"): CLOSED_WINDOW_HOLDINGS,
+        ("POST", "/api/v1/orders"): {"orderId": "ord-part"},
+        ("GET", "/api/v1/orders/ord-part"): us_order(order_id="ord-part", quantity="1"),
+    })
+
+    result = asyncio.run(broker.async_sell_stock("AAPL"))
+
+    posted = next(c[3] for c in client.calls if c[0] == "POST")
+    assert posted["orderType"] == "LIMIT", "a whole-share order is an ordinary order"
+    assert posted["quantity"] == "1"
+    assert result["success"] is True
+
+
+def test_the_unsold_remainder_is_reported_not_hidden():
+    """A partial exit read as a full one is how ledger and broker drift apart."""
+    from decimal import Decimal
+
+    now = _now_kst()
+    broker, _ = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _closed_fractional_window(now),
+        ("GET", "/api/v1/prices"): PRICE_AAPL,
+        ("GET", "/api/v1/holdings"): CLOSED_WINDOW_HOLDINGS,
+        ("POST", "/api/v1/orders"): {"orderId": "ord-part"},
+        ("GET", "/api/v1/orders/ord-part"): us_order(order_id="ord-part", quantity="1"),
+    })
+
+    result = asyncio.run(broker.async_sell_stock("AAPL"))
+
+    assert result["residual_quantity"] == Decimal("0.68024")
+    assert "partial" in result["message"]
+    assert "remain" in result["message"]
+
+
+def test_a_sub_share_position_cannot_be_downgraded_and_says_so():
+    """int(0.44) is 0 — there is nothing to send, and that gap is real."""
+    now = _now_kst()
+    broker, client = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _closed_fractional_window(now),
+        ("GET", "/api/v1/prices"): PRICE_JEPI,
+        ("GET", "/api/v1/holdings"): CLOSED_WINDOW_HOLDINGS,
+    })
+
+    result = asyncio.run(broker.async_sell_stock("JEPI"))
+
+    assert result["success"] is False
+    assert "outcome_unknown" not in result
+    assert not [c for c in client.calls if c[0] == "POST"]
+
+
+def test_no_downgrade_happens_while_the_window_is_open():
+    """Inside the window the whole fractional position goes at once."""
+    now = _now_kst()
+    broker, client = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _calendar_around(
+            now, opens_delta_h=-1, closes_delta_h=5
+        ),
+        ("GET", "/api/v1/prices"): PRICE_AAPL,
+        ("GET", "/api/v1/holdings"): CLOSED_WINDOW_HOLDINGS,
+        ("POST", "/api/v1/orders"): {"orderId": "ord-full"},
+        ("GET", "/api/v1/orders/ord-full"): us_order(order_id="ord-full", quantity="1.68024"),
+    })
+
+    result = asyncio.run(broker.async_sell_stock("AAPL"))
+
+    posted = next(c[3] for c in client.calls if c[0] == "POST")
+    assert posted["orderType"] == "MARKET"
+    assert posted["quantity"] == "1.68024"
+    assert "residual_quantity" not in result
+
+
+def test_buying_is_never_downgraded():
+    """The rule exists for exits; a buy has no position to protect."""
+    broker, _ = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _closed_fractional_window(_now_kst()),
+    })
+
+    whole, residual = broker._downgrade_to_whole(1.68, "BUY")
+    assert whole is None and residual == 0

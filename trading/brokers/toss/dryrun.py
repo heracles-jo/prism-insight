@@ -33,7 +33,7 @@ import logging
 import sqlite3
 import threading
 import uuid
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -412,17 +412,49 @@ class DryRunTossClient:
                 "invalid-request", "symbol, side, orderType are required", status=400
             )
 
-        if body.get("orderAmount") is not None:
-            raise BrokerUnsupported(
-                "amount-based orders are out of scope for v1; not simulated"
-            )
-
         currency = _currency_for(symbol)
-        quantity = _dec(body.get("quantity"))
-        if quantity <= 0:
-            raise TossApiError("invalid-request", "quantity must be positive", status=400)
-
         market_price = self._market_price(symbol)
+
+        order_amount = body.get("orderAmount")
+        if order_amount is not None:
+            # Amount-based: the money is fixed and the share count follows from
+            # the fill price, which is the opposite of a quantity order. Toss
+            # takes these on US market orders only.
+            if body.get("quantity") is not None:
+                raise TossApiError(
+                    "invalid-request",
+                    "send exactly one of quantity or orderAmount",
+                    status=400,
+                )
+            if currency != "USD" or order_type != "MARKET":
+                raise TossApiError(
+                    "invalid-request",
+                    "orderAmount is accepted on US market orders only",
+                    status=400,
+                )
+            spend = _dec(order_amount)
+            if spend <= 0:
+                raise TossApiError(
+                    "invalid-request", "orderAmount must be positive", status=400
+                )
+            if market_price <= 0:
+                raise BrokerUnavailable(f"no usable price for {symbol}")
+            # Six decimals, matching what Toss will report back.
+            quantity = (spend / market_price).quantize(
+                Decimal("0.000001"), rounding=ROUND_DOWN
+            )
+            if quantity <= 0:
+                raise TossApiError(
+                    "invalid-request",
+                    "orderAmount buys less than the minimum fraction",
+                    status=400,
+                )
+        else:
+            quantity = _dec(body.get("quantity"))
+            if quantity <= 0:
+                raise TossApiError(
+                    "invalid-request", "quantity must be positive", status=400
+                )
         limit_price = _dec(body.get("price")) if body.get("price") is not None else None
 
         if order_type == "LIMIT" and limit_price is None:

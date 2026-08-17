@@ -451,3 +451,90 @@ def test_no_production_code_constructs_a_kis_trader_directly():
         "these construct a KIS trader directly and so ignore PRISM_BROKER:\n  "
         + "\n  ".join(offenders)
     )
+
+
+# ── Fractional quantities in the holding contract ────────────────────────────
+
+
+def test_a_fractional_quantity_survives_the_normaliser():
+    """A Toss US position under one share must not be reported as flat."""
+    from decimal import Decimal
+
+    from prism_core.execution_service import normalize_checked_holding
+
+    assert normalize_checked_holding(("HELD", Decimal("0.44519"))) == (
+        "HELD", Decimal("0.44519")
+    )
+
+
+def test_a_decimal_zero_is_flat():
+    """Flat is one state; the broker's typing does not leak past this gate."""
+    from decimal import Decimal
+
+    from prism_core.execution_service import normalize_checked_holding
+
+    assert normalize_checked_holding(("FLAT", Decimal("0"))) == ("FLAT", 0)
+
+
+def test_bool_is_not_accepted_as_a_share_count():
+    """bool subclasses int, so isinstance would read True as one share."""
+    from prism_core.execution_service import normalize_checked_holding
+
+    assert normalize_checked_holding(("HELD", True)) == ("UNKNOWN", None)
+    assert normalize_checked_holding(("FLAT", False)) == ("UNKNOWN", None)
+
+
+def test_float_quantities_are_refused():
+    """float drift would leave a sell-everything order a sliver short."""
+    from prism_core.execution_service import normalize_checked_holding
+
+    assert normalize_checked_holding(("HELD", 0.44)) == ("UNKNOWN", None)
+    assert normalize_checked_holding(("HELD", 5.0)) == ("UNKNOWN", None)
+
+
+def test_a_negative_fractional_quantity_is_refused():
+    from decimal import Decimal
+
+    from prism_core.execution_service import normalize_checked_holding
+
+    assert normalize_checked_holding(("HELD", Decimal("-1"))) == ("UNKNOWN", None)
+
+
+@pytest.mark.parametrize(
+    "state, expected",
+    [
+        (("HELD", 5), ("HELD", 5)),
+        (("FLAT", 0), ("FLAT", 0)),
+        (("UNKNOWN", None), ("UNKNOWN", None)),
+        (("HELD", None), ("UNKNOWN", None)),
+        (("FLAT", 3), ("UNKNOWN", None)),
+        (("HELD", "5"), ("UNKNOWN", None)),
+    ],
+)
+def test_integer_behaviour_is_unchanged(state, expected):
+    """Opening the contract must not alter what it already accepted."""
+    from prism_core.execution_service import normalize_checked_holding
+
+    assert normalize_checked_holding(state) == expected
+
+
+def test_kr_callers_still_refuse_a_fractional_quantity():
+    """Pins that the three KR callers were deliberately left alone.
+
+    Domestic shares are never fractional — Toss rejects domestic fractional
+    orders outright — so a decimal arriving on the KR path means something is
+    wrong, and stopping beats guessing. If someone later "helpfully" makes those
+    callers accept decimals, this test should fail and make them justify it.
+    """
+    from decimal import Decimal
+
+    from prism_core.execution_service import normalize_checked_holding
+
+    state, quantity = normalize_checked_holding(("HELD", Decimal("0.44")))
+    assert state == "HELD"
+
+    # stock_tracking_agent.py:2828 — `not isinstance(checked_quantity, int)`
+    assert not isinstance(quantity, int), "the KR guard must not let a decimal through"
+
+    # tools/hardstop_seller.py:438 and trend_exit_seller.py — `int(checked_qty or 0)`
+    assert int(quantity or 0) <= 0, "the KR guard collapses a sub-share to zero and refuses"
