@@ -51,6 +51,7 @@ We'll know we're right when **`PRISM_BROKER=toss`로 바꾼 뒤 호출측 코드
 - [ ] 토스 계좌 개설·Open API 신청에 별도 승인 절차나 자격 요건이 있는가? 문서상 "WTS > 설정 > Open API"에서 client_id 발급만 언급.
 - [ ] PRISM을 클라우드/크론에서 돌릴 때 **고정 IP 확보 방안**. 토스는 IP allowlist 미등록 시 403.
 - [ ] `us_stock_holdings` / `stock_holdings` DB 테이블에 `broker` 컬럼을 추가할 것인가? 브로커 전환 시 기존 보유 종목 정합성 문제.
+- [ ] **[Phase 1에서 발견]** `USStockTrading`에 `get_holding_quantity_checked`가 없다 (KR에만 존재, `domestic_stock_trading.py:1712`). 즉 **US 경로는 "잔고 0"과 "잔고 조회 실패"를 구분하지 못한다.** KR에는 이를 막는 안전장치가 있는데 US에는 없는 상태. 브로커 작업과 독립된 기존 리스크이며, US 매도 로직 점검이 필요하다.
 
 ---
 
@@ -183,7 +184,7 @@ When **주거래 증권사가 토스인데 PRISM의 자동매매를 쓰고 싶�
 | # | Phase | Description | Status | Parallel | Depends | PRP Plan |
 |---|-------|-------------|--------|----------|---------|----------|
 | 0 | 브랜치 + 계약 테스트 하네스 | `feat/toss-securities-broker` 브랜치, 기존 KIS 테스트 baseline 고정 | complete | - | - | - |
-| 1 | `BrokerPort` 추상화 + KIS 이전 | 브로커 계약 정의, 기존 KIS를 그 뒤로 이전 (동작 무변경) | in-progress | - | 0 | [broker-port-abstraction](../plans/broker-port-abstraction.plan.md) |
+| 1 | `BrokerPort` 추상화 + KIS 이전 | 브로커 계약 정의, 기존 KIS를 그 뒤로 이전 (동작 무변경) | complete | - | 0 | [broker-port-abstraction](../plans/broker-port-abstraction.plan.md) |
 | 2 | 토스 인증 + HTTP 클라이언트 | OAuth2, 토큰 캐시, 레이트리밋, 재시도, 에러 매핑 | pending | with 1 | 0 | - |
 | 3 | dry-run 시뮬레이터 | demo 모드에서 주문 엔드포인트 차단 + 가상 체결 | pending | - | 2 | - |
 | 4 | 토스 매매 어댑터 (KR) | 매수/매도/잔고/매수가능금액/정정/취소 | pending | - | 1, 2 | - |
