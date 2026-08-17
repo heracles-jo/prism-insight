@@ -120,6 +120,26 @@ def process_pending_orders(dry_run: bool = False):
 
     logger.info(f"Found {len(pending_orders)} pending order(s) to process")
 
+    # This batch drains `us_pending_orders`, which exists only because KIS has
+    # time-based reserved orders. Toss has none — its adapter refuses them and
+    # its US orders fail outright outside a session rather than queueing — so
+    # under any other broker there is nothing here to execute, and executing
+    # anyway would place KIS orders while the operator believes they switched.
+    try:
+        from trading.brokers import settings as broker_settings
+
+        selected = broker_settings.selected_broker()
+    except Exception:  # noqa: BLE001 - never let broker config block the batch
+        selected = "kis"
+    if selected != "kis":
+        logger.warning(
+            "PRISM_BROKER=%s — skipping. Reserved orders are a KIS mechanism; "
+            "%d queued row(s) left untouched.",
+            selected, len(pending_orders),
+        )
+        conn.close()
+        return
+
     # Import trading module (prism-us/trading/ is first in sys.path)
     from trading.us_stock_trading import USStockTrading
 

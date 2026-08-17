@@ -40,7 +40,9 @@ def build_fetcher(mode: str):
     from prism_core.stance_quotes import KisQuoteProvider
     from trading.domestic_stock_trading import DomesticStockTrading
 
-    return KisQuoteProvider(DomesticStockTrading(mode=os.getenv("STANCE_KIS_MODE", "real")))
+    from prism_core.stance_quotes import quote_provider_for_broker
+
+    return quote_provider_for_broker(os.getenv("STANCE_KIS_MODE", "real"))
 
 
 def build_calendar(market: str):

@@ -151,7 +151,9 @@ class USDashboardDataGenerator:
 
         try:
             logger.info(f"Fetching KIS US trading data... (mode: {self.trading_mode})")
-            trader = USStockTrading(mode=self.trading_mode)
+            from trading.brokers.factory import us_trader
+
+            trader = us_trader(mode=self.trading_mode)
 
             # Get portfolio data
             portfolio = trader.get_portfolio()

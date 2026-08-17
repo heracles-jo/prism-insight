@@ -46,15 +46,14 @@ def build_quote_provider():
         return None
 
     try:
-        from prism_core.stance_quotes import KisQuoteProvider
-        from trading.domestic_stock_trading import DomesticStockTrading
+        from prism_core.stance_quotes import quote_provider_for_broker
 
-        client = DomesticStockTrading(mode=os.getenv("STANCE_KIS_MODE", "real"))
-        logger.info("KIS 시세 제공자를 연결했습니다.")
-        return KisQuoteProvider(client)
+        provider = quote_provider_for_broker(os.getenv("STANCE_KIS_MODE", "real"))
+        logger.info("%s 시세 제공자를 연결했습니다.", type(provider).__name__)
+        return provider
     except Exception:
         logger.exception(
-            "KIS 시세 제공자를 만들지 못했습니다 — 선언은 보류로 접수됩니다. "
+            "시세 제공자를 만들지 못했습니다 — 선언은 보류로 접수됩니다. "
             "자격증명과 trading/config 설정을 확인하십시오."
         )
         return None

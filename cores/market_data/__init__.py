@@ -31,6 +31,7 @@ from cores.market_data.fdr_source import FdrSource
 from cores.market_data.kis_source import KisSource
 from cores.market_data.krx_source import KrxSource
 from cores.market_data.naver_source import NaverSource
+from cores.market_data.toss_source import TossSource
 from cores.market_data.source import (
     MarketDataSource,
     SourceChain,
@@ -65,11 +66,15 @@ _BUILDERS = {
     "fdr": FdrSource,
     "kis": KisSource,
     "naver": NaverSource,
+    "toss": TossSource,
 }
-# KIS is registered but not in the default order. It is the route we intend to
-# migrate to, and putting it first is a decision to make with measurements
-# rather than at import time — `PRISM_MARKET_DATA_SOURCES=kis,fdr,krx` promotes
-# it without a code change.
+# KIS and Toss are registered but not in the default order. They are the routes
+# we intend to migrate to, and putting one first is a decision to make with
+# measurements rather than at import time — `PRISM_MARKET_DATA_SOURCES=kis,fdr,krx`
+# promotes it without a code change.
+#
+# Toss additionally needs credentials, so leaving it out of the default keeps an
+# unconfigured install from spending a failed attempt on every single lookup.
 _DEFAULT_ORDER = "krx,fdr"
 
 _chain: SourceChain | None = None
