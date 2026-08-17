@@ -194,7 +194,7 @@ When **주거래 증권사가 토스인데 PRISM의 자동매매를 쓰고 싶�
 
 > ² **PRD 가정 정정**: `ExecutionService`가 유일한 분기점이 아니었다. `AsyncTradingContext`를 직접 생성하는 곳이 4군데 있다 — `tracking/helpers.py:117`, `cores/corporate_status.py:88`, `examples/messaging/` 2개. 전부 **주문 경로가 아니라 읽기 전용 시세·상태 조회**이며(특히 `corporate_status`는 토스가 제공하지 않는 KIS 고유 필드 `iscd_stat_cls_code`를 읽는다), 모두 try/except로 안전하게 degrade한다. 의도적으로 KIS를 데이터 소스로 남겨두었다.
 | 6 | 토스 매매 어댑터 (US) | 단일 어댑터 확장, 장중 게이팅, 장외 `NotSupported` | pending | with 7 | 5 | - |
-| 7 | 토스 시세 소스 | `cores/market_data/toss_source.py` → `SourceChain` | pending | with 6 | 2 | - |
+| 7 | 토스 시세 소스 | `cores/market_data/toss_source.py` → `SourceChain` | complete | with 6 | 2 | - |
 | 8 | 문서 + 셋업 가이드 | `toss_config.yaml.example`, README, CLAUDE.md, 마이그레이션 노트 | pending | - | 5, 6, 7 | - |
 
 ### Phase Details
