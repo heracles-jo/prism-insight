@@ -50,50 +50,66 @@ class TossTradingContext:
         self.trader: Any = None
 
     async def __aenter__(self) -> Any:
-        from trading.brokers.toss.adapter import TossBroker
-        from trading.brokers.toss.auth import TossAuth, TossCredentials
-        from trading.brokers.toss.client import TossClient
-
-        settings = config.load_toss_config()
-        credentials = TossCredentials(
-            settings["client_id"],
-            settings["client_secret"],
-            base_url=settings.get("base_url") or "https://openapi.tossinvest.com",
-        )
-        client: Any = TossClient(
-            TossAuth(credentials), account_seq=settings.get("account_seq")
-        )
-
-        if self.mode == config.DEMO:
-            from trading.brokers.toss.dryrun import DryRunTossClient
-
-            client = DryRunTossClient(client)
-            logger.warning(
-                "[BROKER] toss/%s running in demo — orders are simulated, not placed",
-                self.market,
-            )
-        else:
-            # Toss has no paper environment, so `real` is unambiguous and worth
-            # saying out loud once per run.
-            logger.warning(
-                "[BROKER] toss/%s running in REAL mode — orders use real money",
-                self.market,
-            )
-
-        amount = self.buy_amount
-        if amount is None:
-            amount = config.toss_buy_amount(self.market)
-
-        self.trader = TossBroker(
-            client,
-            market=self.market,
-            **({"buy_amount": amount} if amount is not None else {}),
+        self.trader = build_toss_broker(
+            self.market, mode=self.mode, buy_amount=self.buy_amount
         )
         return self.trader
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if exc_type:
             logger.error(f"TossTradingContext error: {exc_type.__name__}: {exc_val}")
+
+
+def build_toss_broker(
+    market: str = "KR",
+    *,
+    mode: str | None = None,
+    buy_amount: int | None = None,
+) -> Any:
+    """A ready `TossBroker`, with the dry-run simulator wired in for demo.
+
+    Shared by the async context and by the direct-trader factories below, so
+    there is exactly one place that decides whether a caller ends up holding a
+    live client or a simulated one. Two such places would eventually disagree,
+    and the disagreement would be "demo mode placed a real order".
+    """
+    from trading.brokers.toss.adapter import TossBroker
+    from trading.brokers.toss.auth import TossAuth, TossCredentials
+    from trading.brokers.toss.client import TossClient
+
+    resolved_mode = (mode or config.trading_mode()).lower()
+    settings = config.load_toss_config()
+    credentials = TossCredentials(
+        settings["client_id"],
+        settings["client_secret"],
+        base_url=settings.get("base_url") or "https://openapi.tossinvest.com",
+    )
+    client: Any = TossClient(
+        TossAuth(credentials), account_seq=settings.get("account_seq")
+    )
+
+    if resolved_mode == config.DEMO:
+        from trading.brokers.toss.dryrun import DryRunTossClient
+
+        client = DryRunTossClient(client)
+        logger.warning(
+            "[BROKER] toss/%s running in demo — orders are simulated, not placed",
+            market.upper(),
+        )
+    else:
+        # Toss has no paper environment, so `real` is unambiguous and worth
+        # saying out loud once per run.
+        logger.warning(
+            "[BROKER] toss/%s running in REAL mode — orders use real money",
+            market.upper(),
+        )
+
+    amount = buy_amount if buy_amount is not None else config.toss_buy_amount(market)
+    return TossBroker(
+        client,
+        market=market.upper(),
+        **({"buy_amount": amount} if amount is not None else {}),
+    )
 
 
 def domestic_context(account_name: str | None = None, **kwargs: Any) -> Any:
@@ -141,6 +157,61 @@ def _kis_us_context(account_name: str | None) -> Any:
         from us_stock_trading import AsyncUSTradingContext
 
     return AsyncUSTradingContext(account_name=account_name)
+
+
+def domestic_trader(**kwargs: Any) -> Any:
+    """The KR trader itself, for callers that do not use the async context.
+
+    Several call sites construct `DomesticStockTrading` directly — the Telegram
+    portfolio reporter, the dashboard generators, the Stance quote provider.
+    They need a trader, not a context, and before this existed they silently
+    stayed on KIS no matter what `PRISM_BROKER` said. That produced the worst
+    kind of inconsistency: orders going to one broker while the report showed
+    the other's balance.
+
+    KIS-only keyword arguments (`account_name`, `product_code`, `auto_trading`,
+    `account_index`) are accepted and ignored on the Toss path, since Toss binds
+    its account through `toss_config.yaml` instead.
+    """
+    if config.selected_broker() == config.TOSS:
+        return build_toss_broker(
+            "KR", mode=kwargs.get("mode"), buy_amount=kwargs.get("buy_amount")
+        )
+
+    from trading.domestic_stock_trading import DomesticStockTrading
+
+    return DomesticStockTrading(**kwargs)
+
+
+def us_trader(**kwargs: Any) -> Any:
+    """The US trader itself. See `domestic_trader`."""
+    if config.selected_broker() == config.TOSS:
+        return build_toss_broker(
+            "US", mode=kwargs.get("mode"), buy_amount=kwargs.get("buy_amount")
+        )
+
+    return _kis_us_trader(**kwargs)
+
+
+def _kis_us_trader(**kwargs: Any) -> Any:
+    """Import `USStockTrading`, tolerating the two package layouts."""
+    import sys
+    from pathlib import Path
+
+    try:
+        from trading.us_stock_trading import USStockTrading
+    except ModuleNotFoundError as exc:
+        if exc.name != "trading.us_stock_trading":
+            raise
+        us_trading_dir = Path(__file__).resolve().parents[2] / "prism-us" / "trading"
+        if not us_trading_dir.is_dir():
+            raise
+        path = str(us_trading_dir)
+        if path not in sys.path:
+            sys.path.insert(0, path)
+        from us_stock_trading import USStockTrading
+
+    return USStockTrading(**kwargs)
 
 
 def broker_label(trader: Any) -> str:

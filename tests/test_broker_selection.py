@@ -282,3 +282,172 @@ def test_the_execution_service_derives_the_label_from_its_trader():
         pass
 
     assert ExecutionService(UnnamedTrader())._broker_label == "KIS"
+
+
+# ── Direct trader factories ──────────────────────────────────────────────────
+
+
+def test_the_trader_factories_default_to_kis(monkeypatch):
+    """Asserts the routing choice, not a live trader — constructing one would
+    authenticate against KIS and turn a unit test into a network call."""
+    import trading.domestic_stock_trading as kis_module
+    from trading.brokers.factory import domestic_trader
+
+    built = {}
+
+    def fake_trader(**kwargs):
+        built.update(kwargs)
+        return "kis-trader"
+
+    monkeypatch.setattr(kis_module, "DomesticStockTrading", fake_trader)
+
+    assert domestic_trader(mode="demo", account_name="primary") == "kis-trader"
+    assert built == {"mode": "demo", "account_name": "primary"}
+
+
+def test_the_trader_factories_follow_the_broker_setting(monkeypatch, tmp_path):
+    """The gap this closes: callers that want a trader, not a context."""
+    from trading.brokers.factory import domestic_trader, us_trader
+    from trading.brokers.toss.adapter import TossBroker
+
+    monkeypatch.setenv("PRISM_BROKER", "toss")
+    monkeypatch.setenv("TOSS_CLIENT_ID", "c_abc")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "s_xyz")
+    monkeypatch.setattr(config, "TOSS_CONFIG_FILE", tmp_path / "absent.yaml")
+
+    kr = domestic_trader(mode="demo", account_name="primary", product_code="01")
+    us = us_trader(mode="demo", account_name="primary", product_code="01")
+
+    assert isinstance(kr, TossBroker) and kr.market == "KR"
+    assert isinstance(us, TossBroker) and us.market == "US"
+
+
+def test_kis_only_keywords_do_not_break_the_toss_path(monkeypatch, tmp_path):
+    """account_name/product_code are meaningless to Toss but callers pass them."""
+    from trading.brokers.factory import domestic_trader
+
+    monkeypatch.setenv("PRISM_BROKER", "toss")
+    monkeypatch.setenv("TOSS_CLIENT_ID", "c_abc")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "s_xyz")
+    monkeypatch.setattr(config, "TOSS_CONFIG_FILE", tmp_path / "absent.yaml")
+
+    assert domestic_trader(
+        mode="demo", account_name="x", product_code="01", auto_trading=False
+    ) is not None
+
+
+def test_demo_mode_traders_never_hold_a_live_client(monkeypatch, tmp_path):
+    from trading.brokers.factory import domestic_trader
+    from trading.brokers.toss.dryrun import DryRunTossClient
+
+    monkeypatch.setenv("PRISM_BROKER", "toss")
+    monkeypatch.setenv("PRISM_TRADING_MODE", "demo")
+    monkeypatch.setenv("TOSS_CLIENT_ID", "c_abc")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "s_xyz")
+    monkeypatch.setattr(config, "TOSS_CONFIG_FILE", tmp_path / "absent.yaml")
+
+    assert isinstance(domestic_trader().client, DryRunTossClient)
+
+
+# ── Stance quote provider ────────────────────────────────────────────────────
+
+
+def test_the_quote_provider_follows_the_broker_setting(monkeypatch, tmp_path):
+    """Trading on Toss while quoting from KIS is the mismatch this prevents."""
+    from prism_core.stance_quotes import TossQuoteProvider, quote_provider_for_broker
+
+    monkeypatch.setenv("PRISM_BROKER", "toss")
+    monkeypatch.setenv("TOSS_CLIENT_ID", "c_abc")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "s_xyz")
+    monkeypatch.setattr(config, "TOSS_CONFIG_FILE", tmp_path / "absent.yaml")
+
+    assert isinstance(quote_provider_for_broker("demo"), TossQuoteProvider)
+
+
+def test_the_toss_quote_provider_reports_limits_and_halts():
+    """Reusing KisQuoteProvider would leave these always-False / always-True."""
+    from decimal import Decimal
+
+    from prism_core.stance_quotes import TossQuoteProvider
+
+    class Stub:
+        def request(self, method, path, *, params=None, **kwargs):
+            if path.startswith("/api/v1/prices"):
+                return [{"symbol": "005930", "lastPrice": "93000"}]
+            if path.startswith("/api/v1/price-limits"):
+                return {"upperLimitPrice": "93000", "lowerLimitPrice": "50400"}
+            if path.startswith("/api/v1/stocks"):
+                return [{"symbol": "005930", "status": "ACTIVE",
+                         "koreanMarketDetail": {"krxTradingSuspended": True}}]
+            raise AssertionError(path)
+
+    quote = TossQuoteProvider(Stub())("KRX", "005930")
+    assert quote.price == Decimal("93000")
+    assert quote.at_upper_limit is True
+    assert quote.at_lower_limit is False
+    assert quote.tradable is False
+
+
+def test_a_failed_limit_lookup_does_not_assert_a_limit():
+    from prism_core.stance_quotes import TossQuoteProvider
+
+    class Stub:
+        def request(self, method, path, *, params=None, **kwargs):
+            if path.startswith("/api/v1/prices"):
+                return [{"symbol": "005930", "lastPrice": "70000"}]
+            raise RuntimeError("down")
+
+    quote = TossQuoteProvider(Stub())("KRX", "005930")
+    assert quote.at_upper_limit is False and quote.at_lower_limit is False
+    assert quote.tradable is True  # unknown must not block a declaration
+
+
+# ── Tripwire ─────────────────────────────────────────────────────────────────
+
+
+def test_no_production_code_constructs_a_kis_trader_directly():
+    """This is the check whose absence let broker selection be half-wired.
+
+    Building `DomesticStockTrading` / `USStockTrading` by hand bypasses
+    `PRISM_BROKER` entirely, which produced orders on one broker and balance
+    reports from the other. New call sites must go through the factory.
+
+    The allowlist is for code that is legitimately KIS-specific — the KIS market
+    data source, the KIS snapshot helper, the factory itself, and the reserved
+    order batch, which drains a queue only KIS can create.
+    """
+    import re
+    import subprocess
+
+    allowed = {
+        "trading/brokers/factory.py",          # the factory itself
+        "cores/market_data/kis_source.py",     # *is* the KIS source
+        "cores/kis_market_snapshot.py",        # KIS-specific by name
+        "prism-us/us_pending_order_batch.py",  # guarded: KIS-only mechanism
+        "prism_core/stance_quotes.py",         # KIS provider construction
+    }
+
+    out = subprocess.run(
+        ["git", "grep", "-nE",
+         r"\b(DomesticStockTrading|USStockTrading|MultiAccountDomesticStockTrading|"
+         r"MultiAccountUSStockTrading)\("],
+        capture_output=True, text=True,
+    ).stdout
+
+    offenders = []
+    for line in out.splitlines():
+        path = line.split(":", 1)[0]
+        if path in allowed:
+            continue
+        if path.startswith(("tests/", "prism-us/tests/", "examples/messaging/")):
+            continue
+        if path in ("trading/domestic_stock_trading.py", "prism-us/trading/us_stock_trading.py"):
+            continue  # the definitions themselves
+        if re.search(r"^\s*(#|\*|\"|')", line.split(":", 2)[-1]):
+            continue  # comments and docstrings
+        offenders.append(line)
+
+    assert not offenders, (
+        "these construct a KIS trader directly and so ignore PRISM_BROKER:\n  "
+        + "\n  ".join(offenders)
+    )

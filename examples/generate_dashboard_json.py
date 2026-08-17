@@ -116,7 +116,9 @@ class DashboardDataGenerator:
         
         try:
             logger.info(f"한국투자증권 데이터 조회 중... (모드: {self.trading_mode})")
-            trader = DomesticStockTrading(mode=self.trading_mode)
+            from trading.brokers.factory import domestic_trader
+
+            trader = domestic_trader(mode=self.trading_mode)
             
             # 포트폴리오 데이터 조회
             portfolio = trader.get_portfolio()

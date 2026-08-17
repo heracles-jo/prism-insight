@@ -353,7 +353,9 @@ class PortfolioTelegramReporter:
         kr_account = self._get_primary_account_config("kr")
         if kr_account:
             try:
-                kr_trader = DomesticStockTrading(
+                from trading.brokers.factory import domestic_trader
+
+                kr_trader = domestic_trader(
                     mode=self.trading_mode,
                     account_name=kr_account["name"],
                     product_code=kr_account["product"],
@@ -375,7 +377,9 @@ class PortfolioTelegramReporter:
             us_account = self._get_primary_account_config("us")
             if us_account:
                 try:
-                    us_trader = USStockTrading(
+                    from trading.brokers.factory import us_trader as _us_trader
+
+                    us_trader = _us_trader(
                         mode=self.trading_mode,
                         account_name=us_account["name"],
                         product_code=us_account["product"],
