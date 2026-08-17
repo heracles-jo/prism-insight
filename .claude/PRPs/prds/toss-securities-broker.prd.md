@@ -188,7 +188,7 @@ When **주거래 증권사가 토스인데 PRISM의 자동매매를 쓰고 싶�
 | 2 | 토스 인증 + HTTP 클라이언트 | OAuth2, 토큰 캐시, 레이트리밋, 재시도, 에러 매핑 | complete¹ | with 1 | 0 | - |
 
 > ¹ 코드·테스트 완료(53건). **실 API 호출 검증만 미완** — 자격증명과 IP 허용등록이 필요하다. `python -m trading.brokers.toss.smoke`로 확인 가능.
-| 3 | dry-run 시뮬레이터 | demo 모드에서 주문 엔드포인트 차단 + 가상 체결 | pending | - | 2 | - |
+| 3 | dry-run 시뮬레이터 | demo 모드에서 주문 엔드포인트 차단 + 가상 체결 | complete | - | 2 | - |
 | 4 | 토스 매매 어댑터 (KR) | 매수/매도/잔고/매수가능금액/정정/취소 | pending | - | 1, 2 | - |
 | 5 | 브로커 설정 + 배선 | `PRISM_BROKER`, `toss_config.yaml`, `ExecutionService` 분기 | pending | - | 4 | - |
 | 6 | 토스 매매 어댑터 (US) | 단일 어댑터 확장, 장중 게이팅, 장외 `NotSupported` | pending | with 7 | 5 | - |
@@ -212,10 +212,12 @@ When **주거래 증권사가 토스인데 PRISM의 자동매매를 쓰고 싶�
 - **Scope**: `trading/brokers/toss/auth.py`(OAuth2 client credentials, 토큰 캐시·401 재발급), `toss/client.py`(토큰버킷 레이트리밋, `Retry-After` 준수, 지수 백오프, 에러 코드 → PRISM 예외 매핑)
 - **Success signal**: `GET /api/v1/accounts` 실호출 성공. 429 상황 시뮬레이션에서 백오프 동작 확인
 
-**Phase 3: dry-run 시뮬레이터**
+**Phase 3: dry-run 시뮬레이터** ✅
 - **Goal**: 모의투자 부재를 메우는 안전장치를 **매매 코드보다 먼저** 확보
-- **Scope**: HTTP 클라이언트 레벨 인터셉터. `mode=demo` + `broker=toss`일 때 주문 계열 엔드포인트 차단, 실시세 기반 가상 체결을 기존 DB 테이블에 기록
+- **Scope**: HTTP 클라이언트 레벨 인터셉터. `mode=demo` + `broker=toss`일 때 주문 계열 엔드포인트 차단, 실시세 기반 가상 체결 기록
 - **Success signal**: demo 모드 전체 파이프라인 실행 시 `POST /api/v1/orders` 호출 카운트 0, 가상 포지션은 정상 생성
+- **결과**: `trading/brokers/toss/dryrun.py`, 테스트 35건. 라우팅 테이블은 **default-deny** — 인식하지 못한 쓰기 요청은 전달하지 않고 차단한다.
+- **계획 대비 변경**: 가상 체결을 "기존 DB 테이블"이 아니라 **전용 SQLite 원장**에 기록한다. `stock_holdings`는 추적 에이전트가 브로커 응답으로부터 채우는 PRISM의 *뷰*라서, 시뮬레이터가 같은 테이블에 쓰면 writer가 둘이 되어 실제 장부가 깨진다. 이건 브로커 상태이고, KIS에서는 같은 이유로 모의투자 서버가 그 상태를 들고 있다.
 
 **Phase 4: 토스 매매 어댑터 (KR)**
 - **Goal**: MVP의 핵심 가치
