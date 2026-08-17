@@ -177,7 +177,9 @@ When **토스로 미국 주식을 소수점 단위로 보유하고 있을 때**,
 
 | # | Phase | Description | Status | Parallel | Depends | PRP Plan |
 |---|-------|-------------|--------|----------|---------|----------|
-| 1 | 계약 확장 + 회귀 고정 | `normalize_checked_holding`이 `Decimal` 허용, KIS/KR 무변경 테스트 | pending | - | - | - |
+| 1 | 계약 확장 + 회귀 고정 | `normalize_checked_holding`이 `Decimal` 허용, KIS/KR 무변경 테스트 | in-progress | - | - | [plan](../plans/fractional-holding-contract.plan.md) |
+
+> ⚠️ **Phase 1 전제 정정**: PRD는 `normalize_checked_holding`이 US 소수점을 막는 벽이라고 가정했으나, 조사 결과 **US 경로는 그 함수를 쓰지 않는다** (`prism-us`는 `get_holding_quantity`를 사용). 호출자 3곳은 전부 KR 전용(`[POSITION-PENDING][KR]`)이며 각자 정수를 재검사한다. 따라서 Phase 1의 가치는 'US 해방'이 아니라 ①계약이 소수를 표현 가능하게 하고 ②KR이 소수를 안전하게 거부함을 고정하는 것이다. **버그의 실제 해소는 Phase 2다.**
 | 2 | 소수 보유 정확 인식 | 어댑터 `Decimal` 파싱, 절삭 제거, 시장별 분기 | pending | - | 1 | - |
 | 3 | 소수 매도 | `quantity` 소수 MARKET 매도, 창 검사, 6자리 절삭 | pending | with 4 | 2 | - |
 | 4 | 금액 기반 매수 | `orderAmount` 매수, 창 검사, 체결 수량 되읽기 | pending | with 3 | 2 | - |
