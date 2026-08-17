@@ -183,7 +183,7 @@ When **주거래 증권사가 토스인데 PRISM의 자동매매를 쓰고 싶�
 | # | Phase | Description | Status | Parallel | Depends | PRP Plan |
 |---|-------|-------------|--------|----------|---------|----------|
 | 0 | 브랜치 + 계약 테스트 하네스 | `feat/toss-securities-broker` 브랜치, 기존 KIS 테스트 baseline 고정 | complete | - | - | - |
-| 1 | `BrokerPort` 추상화 + KIS 이전 | 브로커 계약 정의, 기존 KIS를 그 뒤로 이전 (동작 무변경) | pending | - | 0 | - |
+| 1 | `BrokerPort` 추상화 + KIS 이전 | 브로커 계약 정의, 기존 KIS를 그 뒤로 이전 (동작 무변경) | in-progress | - | 0 | [broker-port-abstraction](../plans/broker-port-abstraction.plan.md) |
 | 2 | 토스 인증 + HTTP 클라이언트 | OAuth2, 토큰 캐시, 레이트리밋, 재시도, 에러 매핑 | pending | with 1 | 0 | - |
 | 3 | dry-run 시뮬레이터 | demo 모드에서 주문 엔드포인트 차단 + 가상 체결 | pending | - | 2 | - |
 | 4 | 토스 매매 어댑터 (KR) | 매수/매도/잔고/매수가능금액/정정/취소 | pending | - | 1, 2 | - |
