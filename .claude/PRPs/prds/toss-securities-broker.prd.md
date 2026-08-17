@@ -197,7 +197,7 @@ When **주거래 증권사가 토스인데 PRISM의 자동매매를 쓰고 싶�
 
 > ³ **전제 정정 — "US 시간대 충돌"은 토스에 대해 사실이 아니었다.** 토스는 US를 **4개 세션**으로 운영하고 전부 KST로 공시한다: `dayMarket` **09:00–16:50**, `preMarket` 17:00–22:30, `regularMarket` 22:30–05:00, `afterMarket` 05:00–07:00. 즉 **한국 근무시간대에 도는 데이마켓이 있어서 아침 배치도 US를 매매할 수 있다.** 거래 가능 시간이 하루 약 22시간이고 공백은 07:00–09:00 KST 뿐이다. 아래 "US 시간대 충돌" 절의 결론(정규장 23:30–06:00 한정, 반쪽 지원)은 **일반 미국 거래소 기준이며 토스에는 적용되지 않는다.**
 | 7 | 토스 시세 소스 | `cores/market_data/toss_source.py` → `SourceChain` | complete | with 6 | 2 | - |
-| 8 | 문서 + 셋업 가이드 | `toss_config.yaml.example`, README, CLAUDE.md, 마이그레이션 노트 | pending | - | 5, 6, 7 | - |
+| 8 | 문서 + 셋업 가이드 | `toss_config.yaml.example`, README, CLAUDE.md, 마이그레이션 노트 | complete | - | 5, 6, 7 | [가이드](../../../docs/TOSS_BROKER_SETUP.md) |
 
 ### Phase Details
 
