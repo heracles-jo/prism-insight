@@ -50,7 +50,35 @@ PRD의 성공 지표 중 하나가 "KIS 회귀 무손실 — 기존 테스트 10
 
 ---
 
-## 사전 조건 (구현 시작 전 반드시 처리)
+## ✅ 확립된 Baseline (2026-08-17 실측)
+
+venv 구축 완료: `.venv` (Python 3.11.15 — 3.14는 pandas/numpy 핀 버전 휠 부재). `pytest`는 `requirements.txt`에 없어 별도 설치.
+
+```bash
+.venv/bin/python -m pytest tests/ -q \
+  --ignore=tests/test_agent_fit_score_constant_tripwire.py \
+  --ignore=tests/test_issue_289_screening.py \
+  --ignore=tests/test_price_query_retry.py \
+  --ignore=tests/test_sideways_downtrend_gate.py \
+  --ignore=tests/test_youtube_crawler.py
+```
+
+| 항목 | Baseline (Phase 1 이전) | Phase 1 이후 |
+|---|---|---|
+| 전체 | **22 failed, 1902 passed, 16 skipped, 10 errors** | 22 failed, **1925 passed**, 16 skipped, 10 errors |
+| KIS 7종 | **99 passed** | **99 passed** |
+
+→ 증가분 23건은 전부 신규 브로커 테스트. **회귀 0건.**
+
+### 실행 시 알아야 할 저장소 특성 (실측으로 발견)
+
+1. **`--ignore` 5개가 필요하다.** `tests/` 하위 4개 파일이 모듈 레벨 `sys.exit()`를 호출하는 스크립트형이라 pytest **수집 전체를 INTERNALERROR로 중단**시킨다 (`test_agent_fit_score_constant_tripwire.py:107`, `test_issue_289_screening.py:181`, `test_price_query_retry.py`, `test_sideways_downtrend_gate.py`). `test_youtube_crawler.py`는 존재하지 않는 모듈 `youtube_event_fund_crawler`를 import 한다. **전부 이 작업과 무관한 기존 문제**다.
+2. **`trading/config/kis_devlp.yaml`이 있어야 KIS 테스트가 수집된다.** 없으면 `FileNotFoundError`로 6개 파일이 collection error. `.gitignore:74`로 무시되므로 `.example`을 복사해 플레이스홀더로 두면 된다 (자격증명 불필요).
+3. baseline의 22 failed / 10 errors 상당수는 `pytest-asyncio` 미설정("async def functions are not natively supported")과 폰트/네트워크 의존이다. 기존 상태이며 이 작업 범위 밖.
+
+---
+
+## 사전 조건 (구현 시작 전 반드시 처리 — ✅ 완료됨)
 
 현재 활성 파이썬은 **다른 프로젝트의 venv**(`/Users/heracles/workspace/trading-ai/.venv`, Python 3.14.6)이며 prism-insight 의존성이 없다. 실측 결과:
 
