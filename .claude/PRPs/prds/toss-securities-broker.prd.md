@@ -45,7 +45,7 @@ We'll know we're right when **`PRISM_BROKER=toss`로 바꾼 뒤 호출측 코드
 
 ## Open Questions
 
-- [ ] **[BLOCKING] US 매수 범위 확정** — 아래 "US 시간대 충돌" 참조. 현재 가정으로 진행 중이며 사용자 확인 필요.
+- [x] ~~**[BLOCKING]** US 매수 범위 확정~~ → **Phase 6에서 해소, 전제 자체가 틀렸음.** 토스는 US를 4개 세션(데이마켓 포함)으로 KST 기준 운영해 하루 약 22시간 거래 가능하다. 옵션 A(세션 중 한정 + 장외 명시적 실패)로 구현했고, 실질적 제약은 07:00–09:00 KST 공백뿐이다.
 - [ ] KIS 계좌가 없어 자동매매를 못 쓰는 사용자가 실제로 존재하는가? (문제 자체가 아직 가설)
 - [x] ~~토스 OAuth2 액세스 토큰의 만료 시간(TTL)이 문서에 명시되지 않음~~ → **Phase 2에서 해소**: `expires_in`이 토큰 응답에 함께 온다(공개 예시 86400초). 만료 300초 전 사전 갱신으로 구현. 더불어 **"client 당 유효 토큰 1개, 재발급 시 이전 토큰 즉시 무효화"** 규칙을 발견해 스레드락+파일락 기반 공유 캐시로 대응했다.
 - [ ] 토스 계좌 개설·Open API 신청에 별도 승인 절차나 자격 요건이 있는가? 문서상 "WTS > 설정 > Open API"에서 client_id 발급만 언급.
@@ -193,7 +193,9 @@ When **주거래 증권사가 토스인데 PRISM의 자동매매를 쓰고 싶�
 | 5 | 브로커 설정 + 배선 | `PRISM_BROKER`, `toss_config.yaml`, `ExecutionService` 분기 | complete² | - | 4 | - |
 
 > ² **PRD 가정 정정**: `ExecutionService`가 유일한 분기점이 아니었다. `AsyncTradingContext`를 직접 생성하는 곳이 4군데 있다 — `tracking/helpers.py:117`, `cores/corporate_status.py:88`, `examples/messaging/` 2개. 전부 **주문 경로가 아니라 읽기 전용 시세·상태 조회**이며(특히 `corporate_status`는 토스가 제공하지 않는 KIS 고유 필드 `iscd_stat_cls_code`를 읽는다), 모두 try/except로 안전하게 degrade한다. 의도적으로 KIS를 데이터 소스로 남겨두었다.
-| 6 | 토스 매매 어댑터 (US) | 단일 어댑터 확장, 장중 게이팅, 장외 `NotSupported` | pending | with 7 | 5 | - |
+| 6 | 토스 매매 어댑터 (US) | 단일 어댑터 확장, 장중 게이팅, 장외 명시적 실패 | complete³ | with 7 | 5 | - |
+
+> ³ **전제 정정 — "US 시간대 충돌"은 토스에 대해 사실이 아니었다.** 토스는 US를 **4개 세션**으로 운영하고 전부 KST로 공시한다: `dayMarket` **09:00–16:50**, `preMarket` 17:00–22:30, `regularMarket` 22:30–05:00, `afterMarket` 05:00–07:00. 즉 **한국 근무시간대에 도는 데이마켓이 있어서 아침 배치도 US를 매매할 수 있다.** 거래 가능 시간이 하루 약 22시간이고 공백은 07:00–09:00 KST 뿐이다. 아래 "US 시간대 충돌" 절의 결론(정규장 23:30–06:00 한정, 반쪽 지원)은 **일반 미국 거래소 기준이며 토스에는 적용되지 않는다.**
 | 7 | 토스 시세 소스 | `cores/market_data/toss_source.py` → `SourceChain` | complete | with 6 | 2 | - |
 | 8 | 문서 + 셋업 가이드 | `toss_config.yaml.example`, README, CLAUDE.md, 마이그레이션 노트 | pending | - | 5, 6, 7 | - |
 
