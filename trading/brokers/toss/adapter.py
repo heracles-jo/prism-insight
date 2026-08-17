@@ -90,6 +90,8 @@ class TossBroker:
         self.market = normalized
         self.currency = currency or ("KRW" if normalized == "KR" else "USD")
         self.buy_amount = buy_amount if buy_amount is not None else DEFAULT_BUY_AMOUNT_KRW
+        # Company names are static; look each up once per process.
+        self._names: dict[str, str] = {}
 
     @property
     def client(self) -> Any:
@@ -554,7 +556,44 @@ class TossBroker:
 
     # ── Queries ───────────────────────────────────────────────────────────────
 
+    def stock_name(self, symbol: str) -> str:
+        """Company name, cached.
+
+        `/api/v1/prices` carries no name — only symbol, timestamp, lastPrice and
+        currency — so the name comes from `/api/v1/stocks`. Cached because names
+        are static and this would otherwise double the calls on a hot path.
+
+        Falls back to the symbol rather than failing: a missing display name
+        must not take down a price lookup that a buy is waiting on.
+        """
+        cached = self._names.get(symbol)
+        if cached is not None:
+            return cached
+        try:
+            result = self._client.request(
+                "GET", "/api/v1/stocks", params={"symbols": symbol}, group=ratelimit.DEFAULT
+            )
+        except (TossApiError, BrokerUnavailable) as exc:
+            logger.debug("[TOSS] name lookup failed for %s: %s", symbol, exc)
+            return symbol
+
+        rows = result if isinstance(result, list) else [result]
+        for row in rows:
+            if isinstance(row, dict) and str(row.get("symbol")) == symbol:
+                name = str(row.get("name") or "").strip()
+                if name:
+                    self._names[symbol] = name
+                    return name
+        return symbol
+
     def get_current_price(self, stock_code: str, *_: Any, **__: Any) -> dict[str, Any] | None:
+        """Last price in the shape KIS callers read.
+
+        `change_rate` and `volume` are omitted rather than zeroed. Toss's price
+        endpoint does not publish them, and a fabricated 0.0 reads as a real
+        flat day on a chart. Leaving the keys out lets a caller's own
+        `.get(key, default)` apply instead of asserting something untrue.
+        """
         try:
             result = self._client.request(
                 "GET", "/api/v1/prices", params={"symbols": stock_code}, group=ratelimit.DEFAULT
@@ -572,12 +611,10 @@ class TossBroker:
                 continue
             return {
                 "stock_code": stock_code,
-                "stock_name": str(row.get("name") or stock_code),
+                "stock_name": self.stock_name(stock_code),
                 # KIS reports KR prices as int and callers index arithmetic off
                 # that; keeping the type identical avoids surprises downstream.
                 "current_price": int(price) if self.market == "KR" else price,
-                "change_rate": _num(row.get("changeRate")),
-                "volume": _int(row.get("volume")),
             }
         return None
 

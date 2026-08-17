@@ -87,10 +87,14 @@ class StubClient:
         return [c for c in self.calls if c[0] == "POST"]
 
 
+US_STOCK_INFO = [{"symbol": "AAPL", "name": "애플", "market": "NASDAQ"}]
+
+
 def make_us_broker(responses=None):
     from trading.brokers.toss.adapter import TossBroker
 
-    client = StubClient(responses or {})
+    responses = {("GET", "/api/v1/stocks"): US_STOCK_INFO, **(responses or {})}
+    client = StubClient(responses)
     return TossBroker(client, market="US", buy_amount=1000), client
 
 
@@ -238,6 +242,7 @@ def test_kr_orders_are_not_gated_by_the_us_calendar():
     from trading.brokers.toss.adapter import TossBroker
 
     client = StubClient({
+        ("GET", "/api/v1/stocks"): [{"symbol": "005930", "name": "삼성전자"}],
         ("GET", "/api/v1/prices"): [{"symbol": "005930", "name": "삼성전자",
                                      "lastPrice": "70000", "changeRate": "0",
                                      "volume": "1"}],

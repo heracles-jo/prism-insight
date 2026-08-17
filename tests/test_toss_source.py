@@ -86,10 +86,16 @@ def test_it_can_join_a_source_chain():
     assert "toss" in chain.names
 
 
-def test_the_chain_moves_on_when_toss_is_unconfigured():
+def test_the_chain_moves_on_when_toss_is_unconfigured(monkeypatch, tmp_path):
     """No credentials must not fail a report three other sources could answer."""
     from cores.market_data.source import SourceChain
     from cores.market_data.toss_source import TossSource
+    from trading.brokers import settings
+
+    # Point at an absent config so this stays a unit test. Without it the real
+    # toss_config.yaml on a configured machine would be read and this would
+    # quietly become a live API call.
+    monkeypatch.setattr(settings, "TOSS_CONFIG_FILE", tmp_path / "absent.yaml")
 
     class Backup:
         name = "backup"

@@ -77,9 +77,14 @@ def filled_order(order_id="ord-1", quantity="10", price="70000", status="FILLED"
     }
 
 
+STOCK_INFO = [{"symbol": "005930", "name": "삼성전자", "market": "KOSPI"}]
+
+
 def make_broker(responses=None, **kwargs):
     from trading.brokers.toss.adapter import TossBroker
 
+    # /api/v1/prices carries no name, so any price lookup also resolves one.
+    responses = {("GET", "/api/v1/stocks"): STOCK_INFO, **(responses or {})}
     client = StubClient(responses)
     return TossBroker(client, market="KR", buy_amount=1_000_000, **kwargs), client
 
@@ -379,9 +384,44 @@ def test_current_price_matches_the_kis_shape_and_int_type():
     broker, _ = make_broker({("GET", "/api/v1/prices"): PRICE_005930})
 
     price = broker.get_current_price("005930")
-    assert set(price) == {"stock_code", "stock_name", "current_price", "change_rate", "volume"}
+    assert set(price) == {"stock_code", "stock_name", "current_price"}
     assert isinstance(price["current_price"], int)
     assert price["current_price"] == 70000
+    assert price["stock_name"] == "삼성전자"
+
+
+def test_absent_fields_are_omitted_rather_than_zeroed():
+    """Toss's price endpoint publishes no change rate or volume, and a
+    fabricated 0.0 reads as a real flat day on a chart."""
+    broker, _ = make_broker({("GET", "/api/v1/prices"): PRICE_005930})
+
+    price = broker.get_current_price("005930")
+    assert "change_rate" not in price
+    assert "volume" not in price
+    # A caller's own default still applies cleanly.
+    assert price.get("change_rate", 0) == 0
+
+
+def test_the_company_name_is_looked_up_once_and_cached():
+    broker, client = make_broker({("GET", "/api/v1/prices"): PRICE_005930})
+
+    broker.get_current_price("005930")
+    broker.get_current_price("005930")
+
+    lookups = [c for c in client.calls if c[1] == "/api/v1/stocks"]
+    assert len(lookups) == 1, "the name was re-fetched on a hot path"
+
+
+def test_a_failed_name_lookup_falls_back_to_the_symbol():
+    """A cosmetic field must not take down a price a buy is waiting on."""
+    from trading.brokers.base import BrokerUnavailable
+
+    broker, _ = make_broker({
+        ("GET", "/api/v1/prices"): PRICE_005930,
+        ("GET", "/api/v1/stocks"): BrokerUnavailable("down"),
+    })
+
+    assert broker.get_current_price("005930")["stock_name"] == "005930"
 
 
 def test_account_summary_uses_the_kis_key_names():
