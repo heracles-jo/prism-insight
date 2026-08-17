@@ -80,7 +80,7 @@ venv 구축 완료: `.venv` (Python 3.11.15 — 3.14는 pandas/numpy 핀 버전 
 
 ## 사전 조건 (구현 시작 전 반드시 처리 — ✅ 완료됨)
 
-현재 활성 파이썬은 **다른 프로젝트의 venv**(`/Users/heracles/workspace/trading-ai/.venv`, Python 3.14.6)이며 prism-insight 의존성이 없다. 실측 결과:
+현재 활성 파이썬이 **다른 프로젝트의 venv**(Python 3.14.6)로 잡혀 있어 prism-insight 의존성이 없다. 실측 결과:
 
 ```
 python -m pytest tests/test_execution_service.py tests/test_sell_denominator_sync.py -q
@@ -95,7 +95,7 @@ python -m pytest tests/test_async_trading.py tests/test_multi_account_domestic.p
 **즉 현재 KIS 테스트 baseline을 확립할 수 없다.** 구현 착수 전에:
 
 ```bash
-cd /Users/heracles/workspace/prism-insight
+cd <repo>
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python -m pytest tests/ -q          # ← 이 결과가 진짜 baseline
@@ -484,7 +484,7 @@ async def __aexit__(self, exc_type, exc_val, exc_tb):
 
 ### 0. 환경 준비 (최초 1회, 필수)
 ```bash
-cd /Users/heracles/workspace/prism-insight
+cd <repo>
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python -m pytest tests/ -q | tail -3        # ← baseline 기록
