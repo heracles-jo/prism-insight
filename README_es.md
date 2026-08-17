@@ -249,7 +249,8 @@ PRISM-INSIGHT es un sistema de analisis bursatil impulsado por IA, **completamen
 - **Deteccion de Movimientos Inusuales** — Deteccion automatica de acciones con volumen o movimientos de precio inusuales
 - **Informes de Analisis con IA** — Informes de nivel profesional generados por 13 agentes de IA especializados
 - **Simulacion de Trading** — Decisiones de compra/venta impulsadas por IA con gestion de portafolio
-- **Trading Automatizado** — Ejecucion real a traves de la API de Korea Investment & Securities
+- **Trading Automatizado** — Ejecucion real a traves de la API de Korea Investment & Securities o Toss Securities
+  (elige con `PRISM_BROKER`; ver [guia de Toss](docs/TOSS_BROKER_SETUP.md))
 - **Integracion con Telegram** — Alertas en tiempo real y difusion en multiples idiomas
 - **Inteligencia Macro** — Deteccion del regimen de mercado, analisis de rotacion sectorial y monitoreo de eventos de riesgo
 
@@ -291,7 +292,7 @@ Mas de 13 agentes especializados colaboran en equipos:
 | **Deteccion de Movimientos** | Lista de seguimiento automatica a traves del analisis de tendencias del mercado matutino/vespertino |
 | **Telegram** | Distribucion de analisis en tiempo real a canales |
 | **Simulacion de Trading** | Simulacion de estrategia de inversion impulsada por IA |
-| **Trading Automatizado** | Ejecucion a traves de la API de Korea Investment & Securities |
+| **Trading Automatizado** | Ejecucion a traves de la API de Korea Investment & Securities o Toss Securities (`PRISM_BROKER`) |
 | **Dashboard** | Seguimiento transparente de portafolio, operaciones y rendimiento |
 | **Auto-mejora** | Ciclo de retroalimentacion con bitacora de trading — las tasas de exito historicas de cada tipo de alerta informan automaticamente las decisiones futuras de compra ([detalles](docs/TRADING_JOURNAL.md#performance-tracker-피드백-루프-self-improving-trading)) |
 | **Mercados de EE.UU.** | Soporte completo para analisis de NYSE/NASDAQ |

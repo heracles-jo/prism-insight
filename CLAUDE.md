@@ -20,7 +20,14 @@ prism-insight/
 │   ├── chatgpt_proxy/       # ChatGPT OAuth Proxy (Codex endpoint)
 │   ├── analysis.py          # Core orchestration
 │   └── report_generation.py # Report templates
-├── trading/                  # KIS API Trading (KR)
+├── trading/                  # Trading (KR)
+│   ├── brokers/             # Broker abstraction — pick with PRISM_BROKER
+│   │   ├── base.py          #   BrokerPort contract + exception types
+│   │   ├── factory.py       #   the one place "which broker" is answered
+│   │   ├── kis_adapter.py   #   KIS behind the contract (delegating wrapper)
+│   │   └── toss/            #   Toss: auth, client, ratelimit, dryrun, adapter
+│   ├── domestic_stock_trading.py  # KIS 국내주식
+│   └── kis_auth.py
 ├── prism-us/                # US Stock Module (mirror of KR)
 │   ├── cores/agents/        # US-specific agents
 │   ├── trading/             # KIS Overseas API
@@ -102,6 +109,7 @@ stock_tracking_agent.py  (runs independently, cron)
 | `mcp_agent.secrets.yaml` | API keys (OpenAI, Anthropic, Firecrawl, etc.) |
 | `mcp_agent.config.yaml` | MCP server configuration |
 | `trading/config/kis_devlp.yaml` | KIS trading API credentials |
+| `trading/config/toss_config.yaml` | Toss trading API credentials (only when `PRISM_BROKER=toss`) |
 
 **Setup**: Copy `*.example` files and fill in credentials.
 
@@ -110,11 +118,33 @@ stock_tracking_agent.py  (runs independently, cron)
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `TELEGRAM_BOT_TOKEN` | ✅ | Telegram bot token |
-| `TELEGRAM_CHANNEL_ID` | ✅ | KR channel ID |
+| `TELEGRAM_CHANNEL_ID` | ✅ | KR channel ID. Bot must be a channel **administrator** with "Post Messages" |
 | `PRISM_OPENAI_AUTH_MODE` | ✅ | `api_key` (default) or `chatgpt_oauth` |
+| `PRISM_BROKER` | ⬜ | `kis` (default) or `toss`. Installation-wide; unset = unchanged behaviour |
+| `PRISM_TRADING_MODE` | ⬜ | `demo` (default) or `real`. Unrecognised values fall back to `demo` |
+| `TOSS_CLIENT_ID` / `TOSS_CLIENT_SECRET` / `TOSS_ACCOUNT_SEQ` | ⬜ | Toss credentials; override `toss_config.yaml` |
+| `PRISM_MARKET_DATA_SOURCES` | ⬜ | Source chain order, e.g. `toss,krx,fdr`. Default `krx,fdr` |
 | `ADANOS_API_KEY` | ⬜ | US social sentiment (Adanos). Omit to disable |
 | `ENABLE_TRADING_JOURNAL` | ⬜ | `true` to enable trading journal agent |
 | `GCP_CREDENTIALS_PATH` | ⬜ | GCP service account JSON for Pub/Sub |
+
+### Broker Selection (v2.21.0)
+
+```bash
+PRISM_BROKER=toss          # kis (default) | toss
+PRISM_TRADING_MODE=demo    # demo (default) | real
+```
+
+> ⚠️ **Toss has no paper-trading server.** Its credentials are always live money.
+> `demo` therefore runs a local dry-run simulator that blocks order endpoints at the
+> HTTP boundary while using real market data. An unrecognised `PRISM_TRADING_MODE`
+> resolves to `demo` so a typo cannot authorise a real order.
+>
+> Toss also requires the server's public IP to be registered (WTS > 설정 > Open API >
+> 허용 IP 관리) — every request 403s otherwise.
+>
+> Full guide → [`docs/TOSS_BROKER_SETUP.md`](docs/TOSS_BROKER_SETUP.md)
+> Verify with `python -m trading.brokers.toss.smoke` (read-only; places no order).
 
 ### Multi-Account Setup (v2.9.0)
 
@@ -198,9 +228,14 @@ TRIGGER_CRITERIA = {
 | Market Hours | 09:00-15:30 KST | 09:30-16:00 EST |
 | Market Cap Filter | 5000억 KRW | $20B USD |
 | DB Tables | `stock_holdings` | `us_stock_holdings` |
-| Trading API | KIS 국내주식 | KIS 해외주식 (예약주문 지원) |
+| Trading API | KIS 국내주식 / Toss 통합 | KIS 해외주식 (예약주문 지원) / Toss 통합 |
+
+> Toss serves KR and US through **one** API, distinguishing market by symbol form
+> (KRX = 6 digits, US = ticker). One adapter covers both; the market is bound per instance.
 
 ## US Reserved Orders (Important)
+
+### KIS
 
 US market operates on different timezone. When market is closed:
 - **Buy**: Requires `limit_price` for reserved order
@@ -211,6 +246,26 @@ US market operates on different timezone. When market is closed:
 result = await trading.async_buy_stock(ticker=ticker, limit_price=current_price)
 result = await trading.async_sell_stock(ticker=ticker, limit_price=current_price)
 ```
+
+### Toss — no reserved orders, but four sessions
+
+Toss has **no time-based reserved order** (its conditional orders are price-triggered,
+which means something else), so those calls raise `BrokerUnsupported` rather than
+returning a failure dict that a caller would retry forever.
+
+It does not need them as much, because Toss runs **four US sessions, all published in KST**:
+
+| Session | KST |
+|---------|-----|
+| `dayMarket` | **09:00–16:50** |
+| `preMarket` | 17:00–22:30 |
+| `regularMarket` | 22:30–05:00 |
+| `afterMarket` | 05:00–07:00 |
+
+The usual "US market is shut while a Korean batch runs" assumption **does not hold for Toss** —
+the day market covers Korean working hours. Tradeable ~22h/day; the only gap is 07:00–09:00 KST.
+Outside every session an order fails explicitly (`success=False`, no `outcome_unknown`) rather
+than being queued, since there is nowhere to queue it.
 
 ## Database Tables
 
@@ -238,6 +293,13 @@ result = await trading.async_sell_stock(ticker=ticker, limit_price=current_price
 | US 예약주문 시간외 실패 | v2.7.1 - 10시 이전 주문은 자동 큐잉 → 10:05 KST 배치 실행 |
 | ChatGPT OAuth 404 | Codex 엔드포인트 미지원 모델 → `_MODEL_MAP` 자동 매핑 (v2.7.0) |
 | ChatGPT OAuth proxy 무반응 | `python -m cores.chatgpt_proxy.oauth_login`으로 토큰 갱신 |
+| Toss 전 요청 403 `access_denied` | 허용 IP 미등록. WTS > 설정 > Open API > 허용 IP 관리 (`curl -s https://api.ipify.org`) |
+| Toss 401 반복 | 토큰은 client당 1개이고 재발급 시 이전 토큰이 무효화됨. PRISM 경로 밖에서 발급 중인지 확인 |
+| Toss 429 급증 | 09:00–09:10 KST 주문 한도가 3 req/s로 낮아짐. 주문 동시성을 줄일 것 |
+| `BrokerUnsupported: reserved order` | 정상. 토스에 시간 기반 예약주문이 없음 |
+| demo인데 실주문 걱정 | `[TOSS_DRYRUN] simulation active` 로그 확인. 주문은 HTTP 경계에서 차단되며 미인식 쓰기는 기본 차단 |
+| 로컬 `.env` 때문에 KIS 테스트 실패 | `tests/conftest.py`가 브로커 환경변수를 테스트마다 초기화함 (일부 테스트가 임포트 시 `load_dotenv()` 호출) |
+| Telegram `chat not found` | 봇을 채널 **관리자**로 추가하고 "메시지 게시" 권한 부여 필요 |
 
 ## i18n Strategy (v2.2.0)
 
@@ -267,6 +329,7 @@ test: Tests
 
 | Ver | Date | Changes |
 |-----|------|---------|
+| 2.21.0 | 2026-08-17 | **토스증권 브로커 지원 (선택형)** - `PRISM_BROKER=kis\|toss` 설치 단위 전역 전환, 호출측 무수정. `trading/brokers/` 브로커 추상화(`BrokerPort`) 도입 후 KIS를 첫 어댑터로 이전(동작 무변경), 토스 OAuth2·레이트리밋·재시도 전송 계층, **모의투자 서버 부재를 메우는 로컬 dry-run 시뮬레이터**(주문은 HTTP 경계에서 default-deny 차단), KR/US 매매 어댑터, `cores/market_data/toss_source.py` 시세 소스(기본 순서 미포함, opt-in). 토스는 예약주문·KR 종가주문 미지원 → `BrokerUnsupported`. US는 4개 세션(**데이마켓 09:00–16:50 KST 포함**)으로 한국 시간대에도 매매 가능. 설정 가이드 → `docs/TOSS_BROKER_SETUP.md` |
 | 2.9.0 | 2026-03-31 | **외부 기여 3종 + 매매 안정성 수정** - 다중 계좌 지원 (tkgo11, #228): 주·부계좌 병렬 팬아웃 + DB 마이그레이션, US 소셜 센티먼트 (alexander-schneider, #229): Adanos API 통합, US 모듈 네임스페이스 충돌 수정 (lifrary, #227): `importlib.util` 기반 임포트, KIS API 오류 3종 (APTR0057·APBK1234) + Telegram JSON sanitize + 손절 방어 강화 (#239), US 매도 ORD_DVSN 누락 수정 (#238), Telegram 타임아웃 지수 백오프 재시도 (#237), OpenAI 400 디버그 로깅 (#232) |
 | 2.7.0 | 2026-03-24 | **ChatGPT OAuth Proxy + README 전면 업데이트** - ChatGPT Plus/Pro 구독으로 API 키 없이 분석 실행 가능 (`cores/chatgpt_proxy/`), Codex 엔드포인트 모델 매핑·SSE 파싱·response_format 변환 (#224), README 5개 언어 전면 개편 (모바일 앱·홍보영상·매매실적·Macro Intelligence 반영), 대시보드 스크린샷 교체 |
 | 2.6.0 | 2026-03-12 | **거시경제 인텔리전스 + 하이브리드 종목선정 + 텔레그램 얼럿 강화** - Macro Intelligence 에이전트 도입 (시장 체제 판단, 주도/낙후 섹터 식별), 탑다운+바텀업 하이브리드 종목 선정 (#202), US score-decision override 버그 수정 (#203), US trigger results 파일 경로 통일 (#204), KR/US 텔레그램 시그널 얼럿에 시장국면·선정채널·점수/R·R/손절 정보 추가 + PDF 커버 날짜 regex 수정 (#205) |
