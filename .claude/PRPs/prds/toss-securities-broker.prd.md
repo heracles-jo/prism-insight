@@ -192,7 +192,17 @@ When **주거래 증권사가 토스인데 PRISM의 자동매매를 쓰고 싶�
 | 4 | 토스 매매 어댑터 (KR) | 매수/매도/잔고/매수가능금액/정정/취소 | complete | - | 1, 2 | - |
 | 5 | 브로커 설정 + 배선 | `PRISM_BROKER`, `toss_config.yaml`, `ExecutionService` 분기 | complete² | - | 4 | - |
 
-> ² **PRD 가정 정정**: `ExecutionService`가 유일한 분기점이 아니었다. `AsyncTradingContext`를 직접 생성하는 곳이 4군데 있다 — `tracking/helpers.py:117`, `cores/corporate_status.py:88`, `examples/messaging/` 2개. 전부 **주문 경로가 아니라 읽기 전용 시세·상태 조회**이며(특히 `corporate_status`는 토스가 제공하지 않는 KIS 고유 필드 `iscd_stat_cls_code`를 읽는다), 모두 try/except로 안전하게 degrade한다. 의도적으로 KIS를 데이터 소스로 남겨두었다.
+> ² **PRD 가정 정정 (2차 — 1차 정정도 불충분했다)**: `ExecutionService`는 유일한 분기점이 아니었고,
+> 처음 보고한 "우회 4곳, 전부 읽기 전용"도 **틀렸다**. 1차 조사는 async 컨텍스트 매니저만 grep해서
+> **트레이더 클래스를 직접 생성하는 곳을 전부 놓쳤다.** 실제로는 11곳이며 읽기 전용이 아닌 것도 있었다:
+> `portfolio_telegram_reporter.py`(텔레그램 잔고 리포트가 다른 브로커 계좌 표시),
+> `generate_dashboard_json.py`·`generate_us_dashboard_json.py`(대시보드 동일),
+> `stance_server.py`·`stance_mark.py`·`stance_quotes.py`(시세가 KIS 고정),
+> `us_pending_order_batch.py`(**`PRISM_BROKER` 무관하게 KIS 실주문**).
+> → `factory.domestic_trader()`/`us_trader()` 추가 후 전부 배선하고, `TossQuoteProvider`를 신설했다.
+> `us_pending_order_batch`는 KIS 전용 큐를 비우는 배치이므로 다른 브로커에서는 실행을 거부한다.
+> 재발 방지로 **"프로덕션 코드가 KIS 트레이더를 직접 생성하지 않는다"는 tripwire 테스트**를 추가했다 —
+> 이 검사가 없었던 것이 반쪽 배선을 방치한 원인이다.
 | 6 | 토스 매매 어댑터 (US) | 단일 어댑터 확장, 장중 게이팅, 장외 명시적 실패 | complete³ | with 7 | 5 | - |
 
 > ³ **전제 정정 — "US 시간대 충돌"은 토스에 대해 사실이 아니었다.** 토스는 US를 **4개 세션**으로 운영하고 전부 KST로 공시한다: `dayMarket` **09:00–16:50**, `preMarket` 17:00–22:30, `regularMarket` 22:30–05:00, `afterMarket` 05:00–07:00. 즉 **한국 근무시간대에 도는 데이마켓이 있어서 아침 배치도 US를 매매할 수 있다.** 거래 가능 시간이 하루 약 22시간이고 공백은 07:00–09:00 KST 뿐이다. 아래 "US 시간대 충돌" 절의 결론(정규장 23:30–06:00 한정, 반쪽 지원)은 **일반 미국 거래소 기준이며 토스에는 적용되지 않는다.**
