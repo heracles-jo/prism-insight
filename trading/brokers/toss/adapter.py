@@ -280,6 +280,115 @@ class TossBroker:
                     return session
         return None
 
+    # ── Fractional quantities ─────────────────────────────────────────────────
+
+    # Toss accepts six decimal places; more is `400 fractional-quantity-scale-exceeded`.
+    FRACTIONAL_SCALE = Decimal("0.000001")
+
+    # Fractional orders close an hour before the regular session does.
+    FRACTIONAL_CUTOFF = datetime.timedelta(hours=1)
+
+    @staticmethod
+    def _is_fractional(quantity: Any) -> bool:
+        value = _dec(quantity)
+        return value != value.to_integral_value()
+
+    def _round_fractional(self, quantity: Decimal) -> Decimal:
+        """Six decimals, always downward.
+
+        Rounding up would ask to sell more than is held, and Toss would reject
+        the whole order rather than fill what exists.
+
+        Only quantizes when the value actually exceeds six places. Quantizing
+        unconditionally pads trailing zeros — 0.44519 becomes 0.445190 — which
+        changes the string sent for a quantity that was already valid.
+        """
+        if -quantity.as_tuple().exponent > 6:
+            return quantity.quantize(self.FRACTIONAL_SCALE, rounding=ROUND_DOWN)
+        return quantity
+
+    def fractional_window_open(self, *, now: datetime.datetime | None = None) -> bool:
+        """True while Toss accepts fractional quantities.
+
+        Narrower than `open_us_session`: fractional orders are only taken from
+        the regular session's open until an hour before its close, so a position
+        can be visible and unsellable at the same time. That gap is real and is
+        reported rather than worked around.
+        """
+        moment = now or datetime.datetime.now(KST)
+        window = self._regular_session(moment)
+        if window is None:
+            return False
+        opens, closes = window
+        return opens <= moment < (closes - self.FRACTIONAL_CUTOFF)
+
+    def _regular_session(
+        self, moment: datetime.datetime
+    ) -> tuple[datetime.datetime, datetime.datetime] | None:
+        """The regular session containing `moment`, if any."""
+        try:
+            calendar = self._client.request(
+                "GET", "/api/v1/market-calendar/US", group=ratelimit.DEFAULT
+            )
+        except (TossApiError, BrokerUnavailable) as exc:
+            logger.warning("[TOSS] US market calendar unavailable: %s", exc)
+            return None
+        if not isinstance(calendar, dict):
+            return None
+
+        for day_key in ("previousBusinessDay", "today", "nextBusinessDay"):
+            day = calendar.get(day_key)
+            if not isinstance(day, dict):
+                continue
+            window = day.get("regularMarket")
+            if not isinstance(window, dict):
+                continue
+            start, end = window.get("startTime"), window.get("endTime")
+            if not start or not end:
+                continue
+            try:
+                opens = datetime.datetime.fromisoformat(str(start))
+                closes = datetime.datetime.fromisoformat(str(end))
+            except ValueError:
+                continue
+            if opens <= moment < closes:
+                return opens, closes
+        return None
+
+    def _refuse_fractional(
+        self, stock_code: str, side: str, quantity: Decimal, reference_price: float
+    ) -> dict[str, Any] | None:
+        """A refusal outcome when this fractional order cannot be placed."""
+        if self.market != "US":
+            return self._outcome(
+                stock_code, success=False, current_price=reference_price,
+                quantity=quantity,
+                message=(
+                    f"{side} rejected: Toss accepts fractional quantities on US "
+                    "orders only; domestic orders must be whole shares."
+                ),
+            )
+        if side != "SELL":
+            return self._outcome(
+                stock_code, success=False, current_price=reference_price,
+                quantity=quantity,
+                message=(
+                    f"{side} rejected: Toss takes fractional quantity on SELL "
+                    "only. A fractional buy is placed by amount (orderAmount)."
+                ),
+            )
+        if not self.fractional_window_open():
+            return self._outcome(
+                stock_code, success=False, current_price=reference_price,
+                quantity=quantity,
+                message=(
+                    f"{side} rejected: fractional orders are accepted only from "
+                    "the regular session open until an hour before its close. "
+                    f"{stock_code} holds {quantity} and cannot be sold right now."
+                ),
+            )
+        return None
+
     def _submit(
         self,
         stock_code: str,
@@ -289,6 +398,16 @@ class TossBroker:
         limit_price: int | float,
         reference_price: float,
     ) -> dict[str, Any]:
+        fractional = self._is_fractional(quantity)
+        if fractional:
+            refusal = self._refuse_fractional(
+                stock_code, side, _dec(quantity), reference_price
+            )
+            if refusal is not None:
+                logger.info("[TOSS] %s %s fractional refused", side, stock_code)
+                return refusal
+            quantity = self._round_fractional(_dec(quantity))
+
         if self.market == "US":
             session = self.open_us_session()
             if session is None:
@@ -323,12 +442,22 @@ class TossBroker:
             "clientOrderId": client_order_id,
             "symbol": stock_code,
             "side": side,
-            "orderType": "LIMIT",
             # `format(..., "f")` so a Decimal never reaches Toss in
             # scientific notation, which it would reject.
             "quantity": format(Decimal(str(quantity)), "f"),
-            "price": self._format_price(limit_price),
         }
+
+        if fractional:
+            # Toss takes a fractional quantity only on a market order, and
+            # rejects the request outright if a price is sent with one.
+            body["orderType"] = "MARKET"
+            logger.info(
+                "[TOSS] %s %s as MARKET for fractional quantity %s",
+                side, stock_code, body["quantity"],
+            )
+        else:
+            body["orderType"] = "LIMIT"
+            body["price"] = self._format_price(limit_price)
 
         try:
             created = self._client.request(
@@ -425,7 +554,10 @@ class TossBroker:
 
         status = str(detail.get("status") or "").upper()
         execution = detail.get("execution") or {}
-        filled = _num(execution.get("filledQuantity"))
+        # Exact, not float: this is the number the tracking ledger and the
+        # Telegram report will carry, and `int()` here reported a 0.44519-share
+        # fill as "0 shares sold".
+        filled = _dec(execution.get("filledQuantity"))
         avg_price = _num(execution.get("averageFilledPrice")) or reference_price
 
         if status in {"REJECTED", "CANCEL_REJECTED", "REPLACE_REJECTED"}:
@@ -441,8 +573,8 @@ class TossBroker:
         # PENDING is a live resting order, not a failure — KIS reports an
         # accepted order the same way, and the tracking agent reconciles later.
         accepted = status in {"FILLED", "PARTIAL_FILLED", "PENDING", "PENDING_REPLACE"}
-        quantity = int(filled) if filled else requested_quantity
-        total = quantity * avg_price
+        quantity = self._settled_quantity(filled, requested_quantity)
+        total = float(quantity) * avg_price
 
         return self._outcome(
             stock_code,
@@ -452,11 +584,26 @@ class TossBroker:
             total_amount=total,
             order_no=order_id,
             message=(
-                f"{side} completed: {quantity} x {avg_price:,.0f} = {total:,.0f}"
+                f"{side} completed: {quantity} x {avg_price:,.4g} = {total:,.2f}"
                 if status == "FILLED"
                 else f"{side} accepted (status={status})"
             ),
         )
+
+    def _settled_quantity(
+        self, filled: Decimal, requested: int | Decimal
+    ) -> int | Decimal:
+        """The filled quantity in the type this market uses.
+
+        KR collapses to `int` so downstream arithmetic and formatting are
+        unchanged; US keeps the exact decimal, because a fractional fill
+        reported as a whole number is how a 0.44-share sale becomes "0 sold".
+        """
+        if not filled:
+            return requested
+        if self.market == "KR":
+            return int(filled)
+        return filled
 
     def _tick(self, price: float) -> int | float:
         """Coerce a price to what this market can express.
