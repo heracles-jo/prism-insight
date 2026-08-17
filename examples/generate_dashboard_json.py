@@ -37,11 +37,20 @@ sys.path.insert(0, str(SCRIPT_DIR))  # Add examples/ folder for translation_util
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(TRADING_DIR))
 
-# krx_data_client import for market index data
+# Market index data via the shared source chain.
+#
+# This used to call krx_data_client directly, which meant a KRX login failure
+# took the market indices down even when another configured source could have
+# answered — and KRX permits one session per account, so a login elsewhere is
+# enough to break it. Going through cores.market_data honours
+# PRISM_MARKET_DATA_SOURCES and falls through krx -> fdr -> toss as configured.
+#
+# The chain returns the same normalized `Close` column this file already reads,
+# and an empty frame when every source is exhausted, which the caller below
+# already handles by falling back to the DB.
 try:
-    from krx_data_client import get_index_ohlcv_by_date
+    from cores.market_data import get_index_ohlcv_by_date
 
-    # pykrx compatibility wrapper
     class stock:
         @staticmethod
         def get_index_ohlcv_by_date(fromdate, todate, ticker):
@@ -50,7 +59,7 @@ try:
     PYKRX_AVAILABLE = True
 except ImportError:
     PYKRX_AVAILABLE = False
-    logger.warning("krx_data_client package not installed. Cannot fetch market index data.")
+    logger.warning("cores.market_data unavailable. Cannot fetch market index data.")
 
 # Import translation utility (after path setup)
 try:
