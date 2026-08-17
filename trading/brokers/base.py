@@ -144,8 +144,12 @@ class BrokerPort(Protocol):
     def get_account_summary(self) -> dict[str, Any]:
         """Cash and valuation totals. `{}` when the query fails."""
 
-    def get_holding_quantity(self, symbol: str, /, *args: Any, **kwargs: Any) -> int:
-        """Held quantity, collapsing failure to 0. Prefer the checked variant."""
+    def get_holding_quantity(self, symbol: str, /, *args: Any, **kwargs: Any) -> int | Decimal:
+        """Held quantity, collapsing an unreadable balance to 0.
+
+        May be a `Decimal` where the broker supports fractional shares. Prefer
+        the checked variant, which also distinguishes "flat" from "unreadable".
+        """
 
     def get_holding_quantity_checked(self, symbol: str, /, *args: Any, **kwargs: Any) -> HoldingState:
         """Held quantity that distinguishes a real zero from a failed query.

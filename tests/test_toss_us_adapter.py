@@ -360,3 +360,116 @@ def test_us_reserved_orders_still_raise_unsupported():
     broker, _ = make_us_broker()
     with pytest.raises(BrokerUnsupported):
         broker.buy_reserved_order("AAPL", limit_price=185.5)
+
+
+# ── Fractional holdings (PRD Phase 2) ────────────────────────────────────────
+
+
+FRACTIONAL_HOLDINGS = {
+    "items": [
+        {"symbol": "JEPI", "name": "JEPI", "currency": "USD", "quantity": "0.44519",
+         "lastPrice": "58.2", "averagePurchasePrice": "57.0",
+         "marketValue": {"amount": "25.91"}, "profitLoss": {"amount": "0.53", "rate": "0.0210"}},
+        {"symbol": "TQQQ", "name": "TQQQ", "currency": "USD", "quantity": "1.68024",
+         "lastPrice": "72.0", "averagePurchasePrice": "68.4",
+         "marketValue": {"amount": "120.98"}, "profitLoss": {"amount": "6.05", "rate": "0.0526"}},
+        {"symbol": "005930", "name": "삼성전자", "currency": "KRW", "quantity": "2",
+         "lastPrice": "274500", "averagePurchasePrice": "270000",
+         "marketValue": {"amount": "549000"}, "profitLoss": {"amount": "9000", "rate": "0.0166"}},
+    ]
+}
+
+
+def test_a_sub_share_holding_is_not_reported_as_flat():
+    """The bug this phase exists to remove: 0.44519 shares read as ("FLAT", 0)."""
+    from decimal import Decimal
+
+    broker, _ = make_us_broker({("GET", "/api/v1/holdings"): FRACTIONAL_HOLDINGS})
+
+    assert broker.get_holding_quantity_checked("JEPI") == ("HELD", Decimal("0.44519"))
+
+
+def test_every_fractional_holding_survives_the_portfolio():
+    """Four of five real holdings used to disappear entirely."""
+    broker, _ = make_us_broker({("GET", "/api/v1/holdings"): FRACTIONAL_HOLDINGS})
+
+    symbols = [r["stock_code"] for r in broker.get_portfolio()]
+    assert symbols == ["JEPI", "TQQQ"]
+
+
+def test_quantities_keep_full_precision():
+    """A float round-trip would lose digits and strand a sliver on a full sell."""
+    from decimal import Decimal
+
+    broker, _ = make_us_broker({("GET", "/api/v1/holdings"): FRACTIONAL_HOLDINGS})
+
+    rows = {r["stock_code"]: r["quantity"] for r in broker.get_portfolio()}
+    assert rows["TQQQ"] == Decimal("1.68024")
+    assert isinstance(rows["TQQQ"], Decimal)
+
+
+def test_a_fractional_holding_passes_the_production_normaliser():
+    """It must survive the shared gate, not just the adapter."""
+    from decimal import Decimal
+
+    from prism_core.execution_service import normalize_checked_holding
+
+    broker, _ = make_us_broker({("GET", "/api/v1/holdings"): FRACTIONAL_HOLDINGS})
+
+    assert normalize_checked_holding(
+        broker.get_holding_quantity_checked("JEPI")
+    ) == ("HELD", Decimal("0.44519"))
+
+
+def test_kr_quantities_stay_integers():
+    """KR shares are always whole; the shared code path must not change type."""
+    from trading.brokers.toss.adapter import TossBroker
+
+    client = StubClient({("GET", "/api/v1/holdings"): FRACTIONAL_HOLDINGS})
+    kr = TossBroker(client, market="KR")
+
+    rows = kr.get_portfolio()
+    assert [r["stock_code"] for r in rows] == ["005930"]
+    assert rows[0]["quantity"] == 2
+    assert type(rows[0]["quantity"]) is int
+    assert kr.get_holding_quantity_checked("005930") == ("HELD", 2)
+
+
+def test_an_unexpected_fractional_kr_quantity_is_logged(caplog):
+    """Should be unreachable — Toss rejects domestic fractional orders — but a
+    silent truncation would be worse than a line in the log."""
+    import logging
+
+    from trading.brokers.toss.adapter import TossBroker
+
+    client = StubClient({("GET", "/api/v1/holdings"): {
+        "items": [{"symbol": "005930", "name": "삼성전자", "currency": "KRW",
+                   "quantity": "2.5", "lastPrice": "274500",
+                   "averagePurchasePrice": "270000",
+                   "marketValue": {"amount": "686250"},
+                   "profitLoss": {"amount": "11250", "rate": "0.0166"}}]
+    }})
+    kr = TossBroker(client, market="KR")
+
+    with caplog.at_level(logging.WARNING):
+        rows = kr.get_portfolio()
+
+    assert type(rows[0]["quantity"]) is int
+    assert rows[0]["quantity"] == 2
+    assert "fractional KR quantity" in caplog.text
+
+
+def test_get_holding_quantity_does_not_collapse_a_fraction_to_zero():
+    """Returning 0 here would recreate the "you hold nothing" bug."""
+    from decimal import Decimal
+
+    broker, _ = make_us_broker({("GET", "/api/v1/holdings"): FRACTIONAL_HOLDINGS})
+
+    assert broker.get_holding_quantity("JEPI") == Decimal("0.44519")
+
+
+def test_a_genuinely_absent_symbol_is_still_flat():
+    broker, _ = make_us_broker({("GET", "/api/v1/holdings"): FRACTIONAL_HOLDINGS})
+
+    assert broker.get_holding_quantity_checked("NVDA") == ("FLAT", 0)
+    assert broker.get_holding_quantity("NVDA") == 0

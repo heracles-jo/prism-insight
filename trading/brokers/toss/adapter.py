@@ -70,6 +70,21 @@ def _int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _dec(value: Any, default: str = "0") -> Decimal:
+    """Toss decimal-string → `Decimal`, keeping every digit it sent.
+
+    Share counts go through here rather than `_num`: a float round-trip of
+    0.788569 loses exactness, and a sell-everything order computed from a lossy
+    quantity leaves a sliver behind that never closes.
+    """
+    if value is None:
+        return Decimal(default)
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal(default)
+
+
 class TossBroker:
     """Trade one market through Toss, speaking the shapes PRISM already reads."""
 
@@ -191,7 +206,9 @@ class TossBroker:
         if state == "FLAT" or not held:
             return self._outcome(stock_code, success=False, message="No holding to sell")
 
-        sell_quantity = min(int(quantity), held) if quantity else held
+        # `held` may be a Decimal on US. Compare in Decimal so a partial-sell
+        # request cannot be rounded up past what is actually held.
+        sell_quantity = min(_dec(quantity), held) if quantity else held
         if sell_quantity <= 0:
             return self._outcome(stock_code, success=False, message="Sell quantity resolved to 0")
 
@@ -268,8 +285,8 @@ class TossBroker:
         stock_code: str,
         *,
         side: str,
-        quantity: int,
-        limit_price: int,
+        quantity: int | Decimal,
+        limit_price: int | float,
         reference_price: float,
     ) -> dict[str, Any]:
         if self.market == "US":
@@ -307,7 +324,9 @@ class TossBroker:
             "symbol": stock_code,
             "side": side,
             "orderType": "LIMIT",
-            "quantity": str(quantity),
+            # `format(..., "f")` so a Decimal never reaches Toss in
+            # scientific notation, which it would reject.
+            "quantity": format(Decimal(str(quantity)), "f"),
             "price": self._format_price(limit_price),
         }
 
@@ -389,7 +408,7 @@ class TossBroker:
         *,
         side: str,
         order_id: str,
-        requested_quantity: int,
+        requested_quantity: int | Decimal,
         reference_price: float,
         detail: dict[str, Any] | None,
     ) -> dict[str, Any]:
@@ -469,7 +488,7 @@ class TossBroker:
         *,
         success: bool,
         current_price: float = 0,
-        quantity: int = 0,
+        quantity: int | Decimal = 0,
         total_amount: float = 0,
         order_no: str | None = None,
         message: str = "",
@@ -628,6 +647,29 @@ class TossBroker:
             return []
         return rows if authoritative else []
 
+    def _quantity(self, raw: Any, symbol: str) -> int | Decimal:
+        """Held share count, exactly as the broker reports it.
+
+        KR stays `int` because domestic shares are always whole and callers have
+        indexed arithmetic off that type since before this adapter existed.
+
+        US keeps the `Decimal`. Toss US holdings are routinely fractional — a
+        real account here holds 0.44519 JEPI — and truncating that to an integer
+        turns a live position into zero, which the sell path reads as "you hold
+        nothing". A position that cannot be seen cannot be stopped out.
+        """
+        value = _dec(raw)
+        if self.market == "KR":
+            if value != value.to_integral_value():
+                # Should be unreachable: Toss rejects domestic fractional orders
+                # outright. Worth a line if it ever happens rather than a silent
+                # truncation.
+                logger.warning(
+                    "[TOSS] unexpected fractional KR quantity for %s: %s", symbol, value
+                )
+            return int(value)
+        return value
+
     def _portfolio_checked(self) -> tuple[bool, list[dict[str, Any]]]:
         """Rows plus whether Toss actually answered.
 
@@ -656,7 +698,7 @@ class TossBroker:
             if self.market == "US" and str(item.get("currency")) == "KRW":
                 continue
 
-            quantity = _int(item.get("quantity"))
+            quantity = self._quantity(item.get("quantity"), symbol)
             if quantity <= 0:
                 continue
 
@@ -678,9 +720,28 @@ class TossBroker:
             )
         return True, portfolio
 
-    def get_holding_quantity(self, stock_code: str, *_: Any, **__: Any) -> int:
+    def get_holding_quantity(self, stock_code: str, *_: Any, **__: Any) -> int | Decimal:
+        """Held quantity, collapsing an unreadable balance to 0.
+
+        Returns the exact quantity rather than an integer for US, because
+        rounding 0.44 down to 0 here would recreate the bug this fix exists to
+        remove — a held position reported as none. Callers that can only do
+        whole-share arithmetic get a warning rather than a silent wrong answer.
+        """
         state, quantity = self.get_holding_quantity_checked(stock_code)
-        return quantity if state == "HELD" and quantity else 0
+        if state != "HELD" or not quantity:
+            return 0
+        if isinstance(quantity, Decimal) and quantity != quantity.to_integral_value():
+            # The pyramided split-sell path does integer division on this value
+            # and would compute a sell quantity of 0. Fractional split selling is
+            # out of scope, so make the degradation visible instead of silent.
+            logger.warning(
+                "[TOSS] %s holds a fractional quantity (%s); whole-share callers "
+                "cannot size a partial sell from it",
+                stock_code,
+                quantity,
+            )
+        return quantity
 
     def get_holding_quantity_checked(self, stock_code: str, *_: Any, **__: Any) -> HoldingState:
         authoritative, portfolio = self._portfolio_checked()
@@ -688,7 +749,9 @@ class TossBroker:
             return "UNKNOWN", None
         for holding in portfolio:
             if holding["stock_code"] == stock_code:
-                return "HELD", int(holding["quantity"])
+                # Pass the quantity through untouched. `int()` here was what made
+                # a 0.44-share holding read as FLAT.
+                return "HELD", holding["quantity"]
         return "FLAT", 0
 
     def get_account_summary(self) -> dict[str, Any]:
