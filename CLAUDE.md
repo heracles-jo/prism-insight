@@ -264,6 +264,12 @@ It does not need them as much, because Toss runs **four US sessions, all publish
 
 The usual "US market is shut while a Korean batch runs" assumption **does not hold for Toss** —
 the day market covers Korean working hours. Tradeable ~22h/day; the only gap is 07:00–09:00 KST.
+
+**Fractional shares (v2.21.1)**: Toss US holdings are routinely fractional. Quantities are
+`Decimal`; a sub-share budget buys via `orderAmount`. The fractional window is narrower than
+the session — it closes an hour before the regular close — so outside it a position of 1.68
+sells its whole part (1) and reports the 0.68 remainder, while a sub-share position cannot be
+sold at all. KR stays integer; Toss rejects domestic fractional orders.
 Outside every session an order fails explicitly (`success=False`, no `outcome_unknown`) rather
 than being queued, since there is nowhere to queue it.
 
@@ -329,6 +335,7 @@ test: Tests
 
 | Ver | Date | Changes |
 |-----|------|---------|
+| 2.21.1 | 2026-08-18 | **토스 US 소수점 주식 지원** - 어댑터가 보유 수량을 정수로 절삭해 1주 미만 포지션이 포트폴리오에서 사라지고 `FLAT`으로 보고되던 버그 수정(실계좌 5종목 중 4종목 소실). 수량을 `Decimal`로 처리(`float`은 전량 매도 시 잔량을 남김), 소수 매도는 시장가·6자리 내림, 1주 미만 예산은 `orderAmount` 금액 매수로 전환. **소수점 거래 창은 정규장 종료 1시간 전까지**라, 창 밖에서는 1주 이상만 정수 부분 매도(잔여는 `residual_quantity`로 보고)하고 1주 미만은 매도 불가. KR은 정수 유지(토스가 국내 소수점 주문을 거부). 가이드 → `docs/TOSS_BROKER_SETUP.md` §9 |
 | 2.21.0 | 2026-08-17 | **토스증권 브로커 지원 (선택형)** - `PRISM_BROKER=kis\|toss` 설치 단위 전역 전환, 호출측 무수정. `trading/brokers/` 브로커 추상화(`BrokerPort`) 도입 후 KIS를 첫 어댑터로 이전(동작 무변경), 토스 OAuth2·레이트리밋·재시도 전송 계층, **모의투자 서버 부재를 메우는 로컬 dry-run 시뮬레이터**(주문은 HTTP 경계에서 default-deny 차단), KR/US 매매 어댑터, `cores/market_data/toss_source.py` 시세 소스(기본 순서 미포함, opt-in). 토스는 예약주문·KR 종가주문 미지원 → `BrokerUnsupported`. US는 4개 세션(**데이마켓 09:00–16:50 KST 포함**)으로 한국 시간대에도 매매 가능. 설정 가이드 → `docs/TOSS_BROKER_SETUP.md` |
 | 2.9.0 | 2026-03-31 | **외부 기여 3종 + 매매 안정성 수정** - 다중 계좌 지원 (tkgo11, #228): 주·부계좌 병렬 팬아웃 + DB 마이그레이션, US 소셜 센티먼트 (alexander-schneider, #229): Adanos API 통합, US 모듈 네임스페이스 충돌 수정 (lifrary, #227): `importlib.util` 기반 임포트, KIS API 오류 3종 (APTR0057·APBK1234) + Telegram JSON sanitize + 손절 방어 강화 (#239), US 매도 ORD_DVSN 누락 수정 (#238), Telegram 타임아웃 지수 백오프 재시도 (#237), OpenAI 400 디버그 로깅 (#232) |
 | 2.7.0 | 2026-03-24 | **ChatGPT OAuth Proxy + README 전면 업데이트** - ChatGPT Plus/Pro 구독으로 API 키 없이 분석 실행 가능 (`cores/chatgpt_proxy/`), Codex 엔드포인트 모델 매핑·SSE 파싱·response_format 변환 (#224), README 5개 언어 전면 개편 (모바일 앱·홍보영상·매매실적·Macro Intelligence 반영), 대시보드 스크린샷 교체 |

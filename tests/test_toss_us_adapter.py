@@ -760,3 +760,109 @@ def test_the_filled_quantity_comes_from_the_read_back():
 
     result = asyncio.run(broker.async_buy_stock("AAPL"))
     assert result["quantity"] == Decimal("0.539083")
+
+
+# ── Downgrade outside the fractional window (PRD Phase 5) ────────────────────
+
+
+CLOSED_WINDOW_HOLDINGS = {
+    "items": [
+        {"symbol": "AAPL", "name": "애플", "currency": "USD", "quantity": "1.68024",
+         "lastPrice": "185.5", "averagePurchasePrice": "180",
+         "marketValue": {"amount": "311.7"}, "profitLoss": {"amount": "9.3", "rate": "0.03"}},
+        {"symbol": "JEPI", "name": "JEPI", "currency": "USD", "quantity": "0.44519",
+         "lastPrice": "58.2", "averagePurchasePrice": "57",
+         "marketValue": {"amount": "25.91"}, "profitLoss": {"amount": "0.53", "rate": "0.02"}},
+    ]
+}
+
+
+def _closed_fractional_window(now):
+    """Inside the regular session but past the fractional cutoff."""
+    return _calendar_around(now, opens_delta_h=-1, closes_delta_h=0.5)
+
+
+def test_a_position_over_one_share_sells_its_whole_part_when_the_window_shuts():
+    """Selling part of a stop-loss beats selling none."""
+    now = _now_kst()
+    broker, client = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _closed_fractional_window(now),
+        ("GET", "/api/v1/prices"): PRICE_AAPL,
+        ("GET", "/api/v1/holdings"): CLOSED_WINDOW_HOLDINGS,
+        ("POST", "/api/v1/orders"): {"orderId": "ord-part"},
+        ("GET", "/api/v1/orders/ord-part"): us_order(order_id="ord-part", quantity="1"),
+    })
+
+    result = asyncio.run(broker.async_sell_stock("AAPL"))
+
+    posted = next(c[3] for c in client.calls if c[0] == "POST")
+    assert posted["orderType"] == "LIMIT", "a whole-share order is an ordinary order"
+    assert posted["quantity"] == "1"
+    assert result["success"] is True
+
+
+def test_the_unsold_remainder_is_reported_not_hidden():
+    """A partial exit read as a full one is how ledger and broker drift apart."""
+    from decimal import Decimal
+
+    now = _now_kst()
+    broker, _ = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _closed_fractional_window(now),
+        ("GET", "/api/v1/prices"): PRICE_AAPL,
+        ("GET", "/api/v1/holdings"): CLOSED_WINDOW_HOLDINGS,
+        ("POST", "/api/v1/orders"): {"orderId": "ord-part"},
+        ("GET", "/api/v1/orders/ord-part"): us_order(order_id="ord-part", quantity="1"),
+    })
+
+    result = asyncio.run(broker.async_sell_stock("AAPL"))
+
+    assert result["residual_quantity"] == Decimal("0.68024")
+    assert "partial" in result["message"]
+    assert "remain" in result["message"]
+
+
+def test_a_sub_share_position_cannot_be_downgraded_and_says_so():
+    """int(0.44) is 0 — there is nothing to send, and that gap is real."""
+    now = _now_kst()
+    broker, client = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _closed_fractional_window(now),
+        ("GET", "/api/v1/prices"): PRICE_JEPI,
+        ("GET", "/api/v1/holdings"): CLOSED_WINDOW_HOLDINGS,
+    })
+
+    result = asyncio.run(broker.async_sell_stock("JEPI"))
+
+    assert result["success"] is False
+    assert "outcome_unknown" not in result
+    assert not [c for c in client.calls if c[0] == "POST"]
+
+
+def test_no_downgrade_happens_while_the_window_is_open():
+    """Inside the window the whole fractional position goes at once."""
+    now = _now_kst()
+    broker, client = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _calendar_around(
+            now, opens_delta_h=-1, closes_delta_h=5
+        ),
+        ("GET", "/api/v1/prices"): PRICE_AAPL,
+        ("GET", "/api/v1/holdings"): CLOSED_WINDOW_HOLDINGS,
+        ("POST", "/api/v1/orders"): {"orderId": "ord-full"},
+        ("GET", "/api/v1/orders/ord-full"): us_order(order_id="ord-full", quantity="1.68024"),
+    })
+
+    result = asyncio.run(broker.async_sell_stock("AAPL"))
+
+    posted = next(c[3] for c in client.calls if c[0] == "POST")
+    assert posted["orderType"] == "MARKET"
+    assert posted["quantity"] == "1.68024"
+    assert "residual_quantity" not in result
+
+
+def test_buying_is_never_downgraded():
+    """The rule exists for exits; a buy has no position to protect."""
+    broker, _ = make_us_broker({
+        ("GET", "/api/v1/market-calendar/US"): _closed_fractional_window(_now_kst()),
+    })
+
+    whole, residual = broker._downgrade_to_whole(1.68, "BUY")
+    assert whole is None and residual == 0

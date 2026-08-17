@@ -417,6 +417,39 @@ class TossBroker:
                 return opens, closes
         return None
 
+    def _downgrade_to_whole(
+        self, quantity: int | Decimal, side: str
+    ) -> tuple[int | None, Decimal]:
+        """Whole shares sellable right now, and what is left over.
+
+        Toss stops accepting fractional quantities an hour before the regular
+        close, which is exactly when a stop-loss may need to fire. Where the
+        position is at least one whole share, that part can still be sold on an
+        ordinary order — 1.68 shares becomes a sale of 1 with 0.68 stranded
+        until the window reopens.
+
+        Returns `(None, 0)` when no downgrade is possible, which is every case
+        under one share: `int(0.44)` is 0, so there is nothing to send. That gap
+        is a property of the API, not something to paper over.
+        """
+        if side != "SELL" or self.market != "US":
+            return None, Decimal("0")
+        if self.fractional_window_open():
+            return None, Decimal("0")
+
+        value = _dec(quantity)
+        whole = int(value)
+        if whole < 1:
+            return None, Decimal("0")
+
+        residual = value - whole
+        logger.warning(
+            "[TOSS] fractional window shut; selling %d of %s share(s), "
+            "%s remains until it reopens",
+            whole, value, residual,
+        )
+        return whole, residual
+
     def _refuse_fractional(
         self, stock_code: str, side: str, quantity: Decimal, reference_price: float
     ) -> dict[str, Any] | None:
@@ -461,14 +494,22 @@ class TossBroker:
         reference_price: float,
     ) -> dict[str, Any]:
         fractional = self._is_fractional(quantity)
+        residual = Decimal("0")
         if fractional:
-            refusal = self._refuse_fractional(
-                stock_code, side, _dec(quantity), reference_price
-            )
-            if refusal is not None:
-                logger.info("[TOSS] %s %s fractional refused", side, stock_code)
-                return refusal
-            quantity = self._round_fractional(_dec(quantity))
+            whole, residual = self._downgrade_to_whole(quantity, side)
+            if whole is not None:
+                # The fractional window is shut but at least one whole share can
+                # still go out. Selling part of a stop-loss beats selling none.
+                quantity, fractional = whole, False
+            else:
+                refusal = self._refuse_fractional(
+                    stock_code, side, _dec(quantity), reference_price
+                )
+                if refusal is not None:
+                    logger.info("[TOSS] %s %s fractional refused", side, stock_code)
+                    return refusal
+                quantity = self._round_fractional(_dec(quantity))
+                residual = Decimal("0")
 
         if self.market == "US":
             session = self.open_us_session()
@@ -521,13 +562,22 @@ class TossBroker:
             body["orderType"] = "LIMIT"
             body["price"] = self._format_price(limit_price)
 
-        return self._dispatch(
+        outcome = self._dispatch(
             body,
             stock_code=stock_code,
             side=side,
             quantity=quantity,
             reference_price=reference_price,
         )
+        if residual > 0:
+            # Say plainly that this did not close the position. A partial exit
+            # read as a full one is how the ledger and the broker drift apart.
+            outcome["residual_quantity"] = residual
+            outcome["message"] = (
+                f"{outcome['message']} — partial: {residual} share(s) remain "
+                "and can only be sold once the fractional window reopens"
+            )
+        return outcome
 
     def _dispatch(
         self,
