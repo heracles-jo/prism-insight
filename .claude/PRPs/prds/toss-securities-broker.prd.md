@@ -189,7 +189,7 @@ When **주거래 증권사가 토스인데 PRISM의 자동매매를 쓰고 싶�
 
 > ¹ 코드·테스트 완료(53건). **실 API 호출 검증만 미완** — 자격증명과 IP 허용등록이 필요하다. `python -m trading.brokers.toss.smoke`로 확인 가능.
 | 3 | dry-run 시뮬레이터 | demo 모드에서 주문 엔드포인트 차단 + 가상 체결 | complete | - | 2 | - |
-| 4 | 토스 매매 어댑터 (KR) | 매수/매도/잔고/매수가능금액/정정/취소 | pending | - | 1, 2 | - |
+| 4 | 토스 매매 어댑터 (KR) | 매수/매도/잔고/매수가능금액/정정/취소 | complete | - | 1, 2 | - |
 | 5 | 브로커 설정 + 배선 | `PRISM_BROKER`, `toss_config.yaml`, `ExecutionService` 분기 | pending | - | 4 | - |
 | 6 | 토스 매매 어댑터 (US) | 단일 어댑터 확장, 장중 게이팅, 장외 `NotSupported` | pending | with 7 | 5 | - |
 | 7 | 토스 시세 소스 | `cores/market_data/toss_source.py` → `SourceChain` | pending | with 6 | 2 | - |
