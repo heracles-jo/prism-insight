@@ -34,7 +34,7 @@ import datetime
 import logging
 import math
 import uuid
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -165,7 +165,7 @@ class TossBroker:
         # KIS sends the current price as the limit when none is given, and the
         # tracking logic is tuned to that behaviour; diverging here would make
         # the two brokers fill differently from identical signals.
-        effective_limit = int(limit_price) if limit_price and limit_price > 0 else int(current_price)
+        effective_limit = self._tick(limit_price if limit_price and limit_price > 0 else current_price)
 
         return self._submit(
             stock_code,
@@ -199,7 +199,7 @@ class TossBroker:
             return self._outcome(stock_code, success=False, message=f"Failed to get current price: {exc}")
 
         current_price = (price_info or {}).get("current_price") or 0
-        effective_limit = int(limit_price) if limit_price and limit_price > 0 else int(current_price)
+        effective_limit = self._tick(limit_price if limit_price and limit_price > 0 else current_price)
         if effective_limit <= 0:
             return self._outcome(stock_code, success=False, message="Failed to get current price")
 
@@ -211,6 +211,56 @@ class TossBroker:
             reference_price=current_price,
         )
 
+    # ── US session gating ─────────────────────────────────────────────────────
+
+    US_SESSIONS = ("dayMarket", "preMarket", "regularMarket", "afterMarket")
+
+    def open_us_session(self, *, now: datetime.datetime | None = None) -> str | None:
+        """Which US session is open, or None.
+
+        Toss runs four US sessions and publishes all of them in KST, including a
+        day market at 09:00–16:50 KST. That matters: the assumption that "the US
+        market is shut while PRISM runs" holds for a plain US exchange but not
+        here, so the morning batch can in fact trade US names.
+
+        A calendar lookup that fails returns None. Refusing to order beats
+        ordering into a session that may not exist, and the caller is told which
+        it was.
+        """
+        moment = now or datetime.datetime.now(KST)
+        try:
+            calendar = self._client.request(
+                "GET", "/api/v1/market-calendar/US", group=ratelimit.DEFAULT
+            )
+        except (TossApiError, BrokerUnavailable) as exc:
+            logger.warning("[TOSS] US market calendar unavailable: %s", exc)
+            return None
+
+        if not isinstance(calendar, dict):
+            return None
+
+        # Sessions straddle midnight KST, so yesterday's regular session can
+        # still be running now; every published day is checked.
+        for day_key in ("previousBusinessDay", "today", "nextBusinessDay"):
+            day = calendar.get(day_key)
+            if not isinstance(day, dict):
+                continue
+            for session in self.US_SESSIONS:
+                window = day.get(session)
+                if not isinstance(window, dict):
+                    continue
+                start, end = window.get("startTime"), window.get("endTime")
+                if not start or not end:
+                    continue
+                try:
+                    opens = datetime.datetime.fromisoformat(str(start))
+                    closes = datetime.datetime.fromisoformat(str(end))
+                except ValueError:
+                    continue
+                if opens <= moment < closes:
+                    return session
+        return None
+
     def _submit(
         self,
         stock_code: str,
@@ -220,6 +270,31 @@ class TossBroker:
         limit_price: int,
         reference_price: float,
     ) -> dict[str, Any]:
+        if self.market == "US":
+            session = self.open_us_session()
+            if session is None:
+                # A definite non-placement, reported as a failure rather than
+                # raised. Raising from an order method reaches
+                # `ExecutionService._execute_submitting_order`, which records
+                # UNKNOWN and blocks the position — the opposite of the truth,
+                # since this order provably never left the process.
+                logger.info(
+                    "[TOSS] %s %s refused: no US session open (Toss trades %s)",
+                    side, stock_code, ", ".join(self.US_SESSIONS),
+                )
+                return self._outcome(
+                    stock_code,
+                    success=False,
+                    current_price=reference_price,
+                    quantity=quantity,
+                    message=(
+                        f"{side} rejected: no US session open. Toss accepts orders "
+                        f"only during {', '.join(self.US_SESSIONS)}; it has no "
+                        f"time-based reserved order to queue this into."
+                    ),
+                )
+            logger.info("[TOSS] %s %s during US %s", side, stock_code, session)
+
         # A fresh key per attempt, so the client may safely retry a request
         # whose response was lost: Toss replays the original result for ten
         # minutes rather than creating a second order.
@@ -362,11 +437,29 @@ class TossBroker:
             ),
         )
 
+    def _tick(self, price: float) -> int | float:
+        """Coerce a price to what this market can express.
+
+        KR trades in whole won, so an int is right there. US trades in cents,
+        and coercing to int would quietly turn $185.50 into $185 — a half-dollar
+        below the intended limit on every single US order.
+        """
+        return int(price) if self.market == "KR" else float(price)
+
     def _format_price(self, price: int | float) -> str:
-        """KR prices are whole won; US allows decimals."""
+        """Match Toss's published precision rules per market.
+
+        KR is whole won. US takes four decimals below $1 and two at or above it,
+        and Toss *truncates* rather than rounds — so rounding up here could
+        produce a price it then refuses, or one a cent away from intended.
+        """
         if self.market == "KR":
             return str(int(price))
-        return f"{float(price):.4f}".rstrip("0").rstrip(".")
+
+        value = Decimal(str(float(price)))
+        places = Decimal("0.0001") if value < 1 else Decimal("0.01")
+        truncated = value.quantize(places, rounding=ROUND_DOWN)
+        return format(truncated.normalize(), "f")
 
     def _outcome(
         self,
@@ -617,3 +710,8 @@ class TossBroker:
 def toss_domestic(client: Any, **kwargs: Any) -> TossBroker:
     """Wrap a Toss client for the Korean market."""
     return TossBroker(client, market="KR", **kwargs)
+
+
+def toss_us(client: Any, **kwargs: Any) -> TossBroker:
+    """Wrap a Toss client for the US market."""
+    return TossBroker(client, market="US", **kwargs)
