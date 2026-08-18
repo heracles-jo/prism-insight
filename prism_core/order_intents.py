@@ -9,6 +9,7 @@ import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -128,7 +129,10 @@ class OrderIntent:
     source_decision_id: str | None
     source_position_id: str | None
     execution_mode: str
-    quantity: int | None
+    quantity: int | str | None
+    """Whole-share counts stay int; fractional (Toss US) quantities are stored
+    as their exact decimal string — sqlite3 cannot bind Decimal, json.dumps
+    cannot serialize it, and float would corrupt 0.788569."""
     cash_amount: str | None
     limit_price: str | None
     reason: str | None
@@ -147,7 +151,7 @@ class OrderIntent:
         source_decision_id: Any = None,
         source_position_id: Any = None,
         execution_mode: str = "live",
-        quantity: int | None = None,
+        quantity: int | Decimal | None = None,
         cash_amount: Any = None,
         limit_price: Any = None,
         reason: str | None = None,
@@ -160,6 +164,13 @@ class OrderIntent:
             raise ValueError(f"unsupported order side: {side}")
         account_id = str(account_id or "default")
         symbol = str(symbol).upper()
+        if isinstance(quantity, Decimal):
+            # See the field docstring: int when whole, exact string otherwise.
+            quantity = (
+                int(quantity)
+                if quantity == quantity.to_integral_value()
+                else str(quantity)
+            )
         decision_id = _text(source_decision_id)
         position_id = _text(source_position_id)
         if not decision_id and not position_id:

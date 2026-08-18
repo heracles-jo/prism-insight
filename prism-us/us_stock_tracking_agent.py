@@ -213,7 +213,14 @@ def _kis_auth():
     )
     module = _importlib_util.module_from_spec(spec)
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        # Mirror importlib's own cleanup: a failed exec must not leave a
+        # half-initialized shell cached, or every later call gets
+        # AttributeError instead of the real error.
+        sys.modules.pop(module_name, None)
+        raise
     return module
 
 
@@ -251,7 +258,14 @@ def _load_root_broker_settings():
     )
     module = _importlib_util.module_from_spec(spec)
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        # Mirror importlib's own cleanup: a failed exec must not leave a
+        # half-initialized shell cached, or every later call gets
+        # AttributeError instead of the real error.
+        sys.modules.pop(module_name, None)
+        raise
     return module
 
 # Create MCPApp instance
@@ -561,10 +575,14 @@ class USStockTrackingAgent:
 
     def __init__(
         self,
-        # Anchored to prism-us/ (this file's directory) — the same file the
-        # relative default resolved to when run from prism-us, minus the CWD
-        # dependence. NOT the repo root: the US loop keeps its own DB.
-        db_path: str = str(Path(__file__).resolve().parent / "stock_tracking_db.sqlite"),
+        # The repo-root DB: docker/entrypoint initializes the US tables there
+        # and every sibling US component (pending-order batch, performance
+        # tracker, journal compression) reads it. The documented cron runs from
+        # the repo root, so the old CWD-relative default resolved there too —
+        # anchoring anywhere else would strand existing us_stock_holdings.
+        # STOCK_TRACKING_DB is the same override the seller tools honour.
+        db_path: str = os.getenv("STOCK_TRACKING_DB")
+        or str(Path(__file__).resolve().parents[1] / "stock_tracking_db.sqlite"),
         telegram_token: str = None,
         enable_journal: bool = None
     ):
@@ -2841,9 +2859,26 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     if remaining_rows > 1 and current_price > 0:
                         try:
                             async with ExecutionService.us(account_name=stock.get("account_name")) as _probe:
-                                # Order gets queued when market is closed AND the
-                                # reserved-order window is unavailable (pre-10:00 KST).
-                                will_queue = (not _probe.is_market_open()) and (not _probe.is_reserved_order_available())
+                                if getattr(_probe, "name", "kis") == "toss":
+                                    # Toss has no order queue at all: an
+                                    # off-session order fails explicitly rather
+                                    # than being queued, so a partial sell must
+                                    # never be escalated to a full exit here.
+                                    # This also keeps a transient session-
+                                    # calendar API failure (is_market_open →
+                                    # False on a network blip) from liquidating
+                                    # the whole position.
+                                    will_queue = False
+                                else:
+                                    # KIS: order gets queued when the market is
+                                    # closed AND the reserved-order window is
+                                    # unavailable (pre-10:00 KST). Pure clock
+                                    # arithmetic, but keep it off the event loop
+                                    # like every other trader call.
+                                    will_queue = await asyncio.to_thread(
+                                        lambda: (not _probe.is_market_open())
+                                        and (not _probe.is_reserved_order_available())
+                                    )
                         except Exception as probe_err:
                             logger.warning(f"{ticker} could not probe order window ({probe_err}); assuming will_queue=True (safe full-exit)")
                             will_queue = True

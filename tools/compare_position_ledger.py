@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -21,7 +22,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--db-path",
-        default=str(Path(__file__).resolve().parents[1] / "stock_tracking_db.sqlite"),
+        default=os.getenv("STOCK_TRACKING_DB")
+        or str(Path(__file__).resolve().parents[1] / "stock_tracking_db.sqlite"),
     )
     parser.add_argument(
         "--market",

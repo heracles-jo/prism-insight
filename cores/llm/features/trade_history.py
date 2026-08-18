@@ -64,6 +64,9 @@ def _db_path() -> str:
     is three directories up. Falls back to the CWD-relative name (matching the
     tracking agents' default) if that path does not exist.
     """
+    override = os.getenv("STOCK_TRACKING_DB")
+    if override:
+        return override
     here = os.path.dirname(os.path.abspath(__file__))
     root = os.path.abspath(os.path.join(here, "..", "..", ".."))
     # Always the root path, even when the file does not exist yet. The old

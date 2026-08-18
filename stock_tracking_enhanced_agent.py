@@ -54,7 +54,7 @@ TRADING_ANALYSIS_CONCURRENCY = _resolve_trading_analysis_concurrency()
 class EnhancedStockTrackingAgent(StockTrackingAgent):
     """Enhanced stock tracking and trading agent"""
 
-    def __init__(self, db_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_tracking_db.sqlite"), telegram_token: str = None):
+    def __init__(self, db_path: str = os.getenv("STOCK_TRACKING_DB") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_tracking_db.sqlite"), telegram_token: str = None):
         """Initialize agent"""
         super().__init__(db_path, telegram_token)
         # Market condition storage variable (1: bull market, 0: neutral, -1: bear market)

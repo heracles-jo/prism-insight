@@ -201,10 +201,11 @@ class StockTrackingAgent:
     SCORE_CONSIDER = 7  # Consider buying
     SCORE_UNSUITABLE = 6  # Unsuitable for buying
 
-    # Anchored to this file, not the CWD: the seller tools resolve the DB the
-    # same way, and a cron started from another directory used to split the
-    # buy loop and the sell loops across two different database files.
-    def __init__(self, db_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_tracking_db.sqlite"), telegram_token: str = None, enable_journal: bool = None):
+    # Same resolution chain as the seller tools (hardstop/fill-chaser/...):
+    # STOCK_TRACKING_DB override first, then anchored to this file, never the
+    # CWD — a cron started from another directory used to split the buy loop
+    # and the sell loops across two different database files.
+    def __init__(self, db_path: str = os.getenv("STOCK_TRACKING_DB") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_tracking_db.sqlite"), telegram_token: str = None, enable_journal: bool = None):
         """
         Initialize agent
 

@@ -44,14 +44,16 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# Anchored to this file so a cron started from another directory reads the
-# same DB as the tracking agents (which anchor the same way).
-DEFAULT_DB_PATH = str(Path(__file__).resolve().parent / "stock_tracking_db.sqlite")
-from pathlib import Path
+# Same resolution chain as the tracking agents and seller tools:
+# STOCK_TRACKING_DB override first, then anchored to this file, never the CWD.
+DEFAULT_DB_PATH = os.getenv("STOCK_TRACKING_DB") or str(
+    Path(__file__).resolve().parent / "stock_tracking_db.sqlite"
+)
 
 # Configure logging
 logging.basicConfig(
@@ -517,7 +519,7 @@ Examples:
         "--db-path",
         type=str,
         default=DEFAULT_DB_PATH,
-        help="Path to SQLite database (default: stock_tracking_db.sqlite)"
+        help="Path to SQLite database (default: %(default)s)"
     )
     parser.add_argument(
         "--layer1-age",

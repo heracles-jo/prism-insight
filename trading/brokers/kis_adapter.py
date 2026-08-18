@@ -116,6 +116,27 @@ class KisBroker:
     def calculate_buy_quantity(self, *args: Any, **kwargs: Any) -> int:
         return self._trader.calculate_buy_quantity(*args, **kwargs)
 
+    def is_market_open(self, *args: Any, **kwargs: Any) -> bool:
+        # The US trader answers this itself (exchange hours + weekday). The
+        # domestic trader has no predicate, so the canonical window stands in:
+        # for KIS, 'closing' counts as open because closing-price orders are a
+        # supported order type there. Public holidays are not modelled.
+        method = getattr(self._trader, "is_market_open", None)
+        if method is not None:
+            return method(*args, **kwargs)
+        from prism_core.time_windows import domestic_order_window, now_kst
+
+        moment = now_kst()
+        return moment.weekday() < 5 and domestic_order_window(moment) in ("regular", "closing")
+
+    def is_reserved_order_available(self, *args: Any, **kwargs: Any) -> bool:
+        method = getattr(self._trader, "is_reserved_order_available", None)
+        if method is not None:
+            return method(*args, **kwargs)
+        from prism_core.time_windows import domestic_order_window, now_kst
+
+        return domestic_order_window(now_kst()) == "reserved"
+
 
 def kis_domestic(trader: Any) -> KisBroker:
     """Wrap a domestic KIS trader."""
