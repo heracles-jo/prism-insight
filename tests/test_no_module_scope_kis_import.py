@@ -103,19 +103,7 @@ ENTRY_POINTS = [
 # audit: it loads trading/kis_auth.py by file path at module scope, under the
 # alias `kis_auth`, which the census's old single-key check could not see.
 US_ENTRY_POINTS = [
-    pytest.param(
-        "us_stock_tracking_agent",
-        marks=pytest.mark.xfail(
-            strict=True,
-            reason="the module-scope kis_auth load this froze is fixed (P0 #5), "
-                   "but the probe uncovered an older breakage underneath: the "
-                   "module's cores import resolves to the ROOT cores package "
-                   "(sys.path.insert(0, PROJECT_ROOT) outranks prism-us), so "
-                   "create_us_* names are missing and a clean import dies before "
-                   "reaching anything KIS. Tests only import this module through "
-                   "sys.modules stubs. Phase 5 fixes the shadowing.",
-        ),
-    ),
+    "us_stock_tracking_agent",
     "us_trigger_batch",
     "us_stock_analysis_orchestrator",
     "us_pending_order_batch",

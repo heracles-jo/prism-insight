@@ -151,9 +151,42 @@ translate_telegram_message = _translator_module.translate_telegram_message
 _utils_module = _import_from_main_cores("cores_utils", "cores/utils.py")
 parse_llm_json = _utils_module.parse_llm_json
 
+def _import_from_us_cores(module_name: str, relative_path: str):
+    """Import a module from prism-us/cores/, defeating the root package.
+
+    The mirror of `_import_from_main_cores`, and needed for the same reason
+    pointed the other way. prism-us is sys.path[0] when this runs as a script,
+    but the module-scope imports above (prism_core, cores.openai_debug, ...)
+    have already registered the ROOT `cores` package in sys.modules — after
+    which no path order can reach prism-us/cores by name.
+
+    That is why importing `cores.agents.trading_agents` here raised ImportError
+    for `create_us_trading_scenario_agent` (a name only the US copy has), and
+    why the sys.path fallback below could not rescue it: the failed import left
+    the root package cached. Loading by path sidesteps the name entirely.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        module_name, Path(__file__).resolve().parent / relative_path
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
+
+
+_us_trading_agents = _import_from_us_cores(
+    "prism_us_cores_trading_agents", "cores/agents/trading_agents.py"
+)
+create_us_trading_scenario_agent = _us_trading_agents.create_us_trading_scenario_agent
+create_us_sell_decision_agent = _us_trading_agents.create_us_sell_decision_agent
+
 try:
-    # First try direct import from prism-us directory
-    from cores.agents.trading_agents import create_us_trading_scenario_agent, create_us_sell_decision_agent
     from tracking.db_schema import (
         create_us_tables,
         create_us_indexes,
@@ -176,7 +209,6 @@ except ImportError as e:
     _prism_us_fallback = Path(__file__).parent
     if str(_prism_us_fallback) not in sys.path:
         sys.path.insert(0, str(_prism_us_fallback))
-    from cores.agents.trading_agents import create_us_trading_scenario_agent, create_us_sell_decision_agent
     from tracking.db_schema import (
         create_us_tables,
         create_us_indexes,
