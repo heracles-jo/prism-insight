@@ -29,8 +29,30 @@ PYTHONPATH=/app/prism-insight
 # KR Morning batch at 09:30 KST (Mon-Fri)
 30 9 * * 1-5 cd /app/prism-insight && python3 stock_analysis_orchestrator.py --mode morning >> /app/prism-insight/logs/kr_morning_$(date +\%Y\%m\%d).log 2>&1
 
-# KR Afternoon batch at 15:40 KST (Mon-Fri)
-40 15 * * 1-5 cd /app/prism-insight && python3 stock_analysis_orchestrator.py --mode afternoon >> /app/prism-insight/logs/kr_afternoon_$(date +\%Y\%m\%d).log 2>&1
+# KR Afternoon batch at 14:00 KST (Mon-Fri)
+#
+# WHY NOT 15:40, WHICH IS WHERE THIS USED TO BE:
+# The tracking agent — the only thing in this pipeline that places KR orders —
+# is step 6, after analysis, PDF rendering and Telegram. It therefore starts
+# roughly 40 minutes after the batch does. Started at 15:40 it reached the sell
+# loop past 16:00, and the KR market closes at 15:30.
+#
+# Under KIS that still worked: an order placed after the close became a reserved
+# order and filled the next session. Toss has no reserved orders, so the order is
+# simply refused — and before the gate added in the migration audit, the holdings
+# row had already been deleted and its P&L booked by then. Either way the
+# afternoon exit never happened, which left the morning batch as the only chance
+# to sell all day. There is no standalone seller loop on this crontab to cover it.
+#
+# 14:00 puts the sell loop near 14:40, ~50 minutes clear of the close. That is
+# deliberate margin, not a measurement: check kr_afternoon_*.log for the gap
+# between batch start and "Starting stock tracking system batch execution" and
+# move this later (14:30, 15:00) once the real duration is known — the closing
+# strength trigger reads better the later it runs. A [SELL_BLOCKED] line in the
+# log means it is still too late.
+#
+# The morning batch needs no change: 09:30 + ~40min lands inside market hours.
+0 14 * * 1-5 cd /app/prism-insight && python3 stock_analysis_orchestrator.py --mode afternoon >> /app/prism-insight/logs/kr_afternoon_$(date +\%Y\%m\%d).log 2>&1
 
 # Dashboard refresh at 11:05 KST (Mon-Fri)
 5 11 * * 1-5 cd /app/prism-insight && python3 examples/generate_dashboard_json.py >> /app/prism-insight/logs/dashboard.log 2>&1
@@ -55,14 +77,25 @@ PYTHONPATH=/app/prism-insight
 # US Morning batch at 00:15 KST (10:15 EST) - Tue-Sat (Mon-Fri US)
 15 0 * * 2-6 cd /app/prism-insight && python3 prism-us/us_stock_analysis_orchestrator.py --mode morning >> /app/prism-insight/logs/us_morning_$(date +\%Y\%m\%d).log 2>&1
 
-# US Afternoon batch at 06:30 KST (16:30 EST) - Tue-Sat (Mon-Fri US)
-30 6 * * 2-6 cd /app/prism-insight && python3 prism-us/us_stock_analysis_orchestrator.py --mode afternoon >> /app/prism-insight/logs/us_afternoon_$(date +\%Y\%m\%d).log 2>&1
+# US Afternoon batch at 09:10 KST - Tue-Sat (Mon-Fri US)
+#
+# Same reasoning as the KR afternoon batch above, against a different clock.
+# Toss serves US stock in four sessions, all published in KST, and the only
+# hour of the day with none of them open is 07:00-09:00. Started at 06:30 this
+# batch reached its sell loop around 07:10 — inside that gap — so an exit it
+# decided was refused outright, Toss having no queue to hold it.
+#
+# 09:10 puts the sell loop near 09:50, early in the day market (09:00-16:50),
+# which is the widest session there is. The analysis still reads a closed US
+# market (16:00 EST was hours ago), so nothing about the data changes; only the
+# report and the orders land later in the Korean morning.
+10 9 * * 2-6 cd /app/prism-insight && python3 prism-us/us_stock_analysis_orchestrator.py --mode afternoon >> /app/prism-insight/logs/us_afternoon_$(date +\%Y\%m\%d).log 2>&1
 
-# US Performance tracker at 07:30 KST (17:30 EST) - Tue-Sat (Mon-Fri US)
-30 7 * * 2-6 cd /app/prism-insight && python3 prism-us/us_performance_tracker_batch.py >> /app/prism-insight/logs/us_performance_$(date +\%Y\%m\%d).log 2>&1
+# US Performance tracker at 10:40 KST - Tue-Sat (after the afternoon batch)
+40 10 * * 2-6 cd /app/prism-insight && python3 prism-us/us_performance_tracker_batch.py >> /app/prism-insight/logs/us_performance_$(date +\%Y\%m\%d).log 2>&1
 
-# US Dashboard refresh at 08:00 KST (18:00 EST) - Tue-Sat (Mon-Fri US)
-0 8 * * 2-6 cd /app/prism-insight && python3 examples/generate_us_dashboard_json.py >> /app/prism-insight/logs/us_dashboard.log 2>&1
+# US Dashboard refresh at 11:10 KST - Tue-Sat (after the afternoon batch)
+10 11 * * 2-6 cd /app/prism-insight && python3 examples/generate_us_dashboard_json.py >> /app/prism-insight/logs/us_dashboard.log 2>&1
 
 # US log cleanup at 03:30 KST (daily) - keep 30 days
 30 3 * * * find /app/prism-insight/logs -name "us_*.log" -mtime +30 -delete

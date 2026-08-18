@@ -314,7 +314,7 @@ than being queued, since there is nowhere to queue it.
 | 토스인데 대시보드·텔레그램에 보유 종목 없음 | v2.21.2에서 해결. 가용성 판정이 KIS 임포트 가능 여부를 묻던 버그 |
 | 토스인데 US 매도가 한 번도 안 됨 | v2.22.0 해결. `execute_sell(ticker=...)`가 `TossBroker.async_sell_stock(stock_code, ...)`에 닿지 못해 TypeError. 종목은 **위치 인자**로 넘긴다(`BrokerPort` 규약) |
 | 체결됐는데 `OrderOutcomeUnknown`으로 기록됨 | v2.22.0 해결. 소수 수량 `Decimal`이 sqlite 바인딩에서 실패하던 것. `_normalize_quantity()`가 요청·응답 양쪽을 정규화 |
-| `[SELL_BLOCKED]` 로그가 뜬다 | **스케줄 문제**. 토스는 KR 정규장(09:00–15:30) 밖 주문을 체결할 수 없는데 오후 배치는 15:40 시작 → 트래킹이 ~16:20에 돈다. 크론을 정규장 안으로 옮겨야 한다 |
+| `[SELL_BLOCKED]` 로그가 뜬다 | 배치가 장 마감 후에 매도 루프에 도달했다는 뜻. v2.22.0에서 KR 오후 배치 15:40→**14:00**, US 오후 배치 06:30→**09:10**(토스 US 세션 공백 07:00–09:00 회피)로 조정. 여전히 뜨면 파이프라인이 예상(~40분)보다 오래 걸리는 것이니 로그로 실제 소요를 재고 시각을 더 앞당길 것 |
 | `toss_config.yaml`에서 매수 금액을 바꿔도 안 먹힘 | v2.22.0 해결. 팩토리가 env만 보던 것을 `settings.buy_amount()` 체인(env→브로커 파일→기본값)으로 교체 |
 | 토스인데 대시보드가 demo로 표기 | v2.22.0 해결. 모드를 `kis_devlp.yaml`에서 읽던 것을 `configured_mode()`로 교체 — 실계좌면 이제 real로 나온다 |
 | 로컬 `.env` 때문에 KIS 테스트 실패 | `tests/conftest.py`가 브로커 환경변수를 테스트마다 초기화함 (일부 테스트가 임포트 시 `load_dotenv()` 호출) |

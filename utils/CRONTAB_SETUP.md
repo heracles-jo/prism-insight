@@ -40,7 +40,7 @@ PROJECT_DIR=/opt/prism-insight PYTHON_PATH=/usr/bin/python3 ./setup_crontab.sh -
 | 07:00 | Data Update | Update stock information before market opens |
 | 09:30 | Morning Analysis | Detect and analyze surging stocks after market opens |
 | 11:05 | Dashboard Refresh | Update dashboard JSON data (morning) |
-| 15:40 | Afternoon Analysis | Comprehensive analysis after market closes |
+| 14:00 | Afternoon Analysis | Runs intraday so sell orders reach the 15:30 close |
 | 17:00 | Performance Tracker | Update 7/14/30 day performance tracking |
 | 17:10 | Dashboard Refresh | Update dashboard JSON data (afternoon) |
 | 18:00 | Portfolio Report | (Optional) Daily trading performance report |
@@ -52,7 +52,7 @@ PROJECT_DIR=/opt/prism-insight PYTHON_PATH=/usr/bin/python3 ./setup_crontab.sh -
 - Detect gap-up and volume surge stocks
 - Real-time market trend analysis
 
-#### 2. **Afternoon Analysis (15:40)**
+#### 2. **Afternoon Analysis (14:00)**
 - Comprehensive analysis after market closes
 - Analyze intraday gains and closing strength
 - Generate detailed AI reports
@@ -130,7 +130,7 @@ PYTHONPATH=/path/to/prism-insight
 30 9 * * 1-5 cd /path/to/prism-insight && python stock_analysis_orchestrator.py --mode morning >> logs/morning.log 2>&1
 
 # Afternoon analysis (Mon-Fri 3:40 PM)
-40 15 * * 1-5 cd /path/to/prism-insight && python stock_analysis_orchestrator.py --mode afternoon >> logs/afternoon.log 2>&1
+0 14 * * 1-5 cd /path/to/prism-insight && python stock_analysis_orchestrator.py --mode afternoon >> logs/afternoon.log 2>&1
 
 # -----------------------------------------------------------------------------
 # 대시보드 및 성과 추적 (Dashboard & Performance Tracking)

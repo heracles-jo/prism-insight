@@ -34,7 +34,7 @@ PROJECT_DIR=/opt/prism-insight PYTHON_PATH=/usr/bin/python3 ./setup_crontab.sh -
 |------|------|------|
 | 07:00 | 데이터 업데이트 | 장 시작 전 종목 정보 갱신 |
 | 09:30 | 오전 분석 | 장 시작 후 급등주 포착 및 분석 |
-| 15:40 | 오후 분석 | 장 마감 후 종합 분석 |
+| 14:00 | 오후 분석 | 매도 주문이 15:30 마감 전에 나가야 해 장중에 돈다 |
 | 03:00 | 로그 정리 | 오래된 로그 파일 삭제 |
 | 18:00 | 포트폴리오 리포트 | (선택) 일일 매매 실적 보고 |
 
@@ -45,7 +45,7 @@ PROJECT_DIR=/opt/prism-insight PYTHON_PATH=/usr/bin/python3 ./setup_crontab.sh -
 - 갭 상승, 거래량 급증 종목 포착
 - 실시간 시장 동향 분석
 
-#### 2. **오후 분석 (15:40)**
+#### 2. **오후 분석 (14:00)**
 - 장 마감 후 종합 분석
 - 일중 상승률, 마감 강도 분석
 - 상세 AI 리포트 생성
@@ -80,7 +80,7 @@ PYTHONPATH=/path/to/prism-insight
 30 9 * * 1-5 cd /path/to/prism-insight && python stock_analysis_orchestrator.py --mode morning >> logs/morning.log 2>&1
 
 # 오후 분석 (월-금)
-40 15 * * 1-5 cd /path/to/prism-insight && python stock_analysis_orchestrator.py --mode afternoon >> logs/afternoon.log 2>&1
+0 14 * * 1-5 cd /path/to/prism-insight && python stock_analysis_orchestrator.py --mode afternoon >> logs/afternoon.log 2>&1
 
 # 데이터 업데이트 (월-금)
 0 7 * * 1-5 cd /path/to/prism-insight && python update_stock_data.py >> logs/update.log 2>&1

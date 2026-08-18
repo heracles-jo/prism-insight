@@ -247,7 +247,7 @@ The Docker container includes **built-in cron** for automated stock analysis. Cr
 | 03:00 | KR+US memory compression | Sunday |
 | 07:00 | Stock data update | Mon-Fri |
 | 09:30 | **KR Morning batch** | Mon-Fri |
-| 15:40 | **KR Afternoon batch** | Mon-Fri |
+| 14:00 | **KR Afternoon batch** | Mon-Fri |
 | 11:05 | Dashboard refresh | Mon-Fri |
 | 17:00 | Performance tracker | Mon-Fri |
 | 17:10 | Dashboard refresh | Mon-Fri |
@@ -258,9 +258,9 @@ The Docker container includes **built-in cron** for automated stock analysis. Cr
 |------------|---------------|-----|------|
 | 00:15 | 10:15 | **US Morning batch** | Tue-Sat |
 | 03:30 | - | US log cleanup (30 days) | Daily |
-| 06:30 | 16:30 | **US Afternoon batch** | Tue-Sat |
-| 07:30 | 17:30 | US Performance tracker | Tue-Sat |
-| 08:00 | 18:00 | US Dashboard refresh | Tue-Sat |
+| 09:10 | — | **US Afternoon batch** | Tue-Sat |
+| 10:40 | — | US Performance tracker | Tue-Sat |
+| 11:10 | — | US Dashboard refresh | Tue-Sat |
 | 10:05 | - | US pending-order reconciliation | Tue-Sat |
 
 > **Note**: Docker cron runs in the `Asia/Seoul` timezone and US analysis runs twice daily.
