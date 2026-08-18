@@ -89,7 +89,7 @@ We'll know we're right when **`KRX_ID`/`KRX_PW` 를 지운 상태에서 6 개 �
 ## Open Questions
 
 - [x] ~~토스 수급 조회 기간이 짧을 수 있다~~ — **해소됨.** "2 행" 은 측정 오류였다(응답 dict 의 키 개수 `records`/`nextUntil` 를 행 수로 읽음). `count=100` 1 페이지에 100 거래일(약 5 개월)이 오고, `_MAX_PAGES=20` 으로 약 8 년에 닿는다. 실측: 2 년 범위 639 행 (2024-01-02 ~ 2026-08-18)
-- [ ] 네이버 업종분류(79 개)가 KRX 업종분류와 **분류 체계가 다르다**. DB 의 기존 `sector` 값·`MAX_SAME_SECTOR=3` 제약과 어떻게 맞출 것인가
+- [x] ~~네이버 업종 체계와 `MAX_SAME_SECTOR` 충돌~~ — **해소.** 두 값은 출처가 다르다(위 Technical Risks 참조). 구현 중 더 큰 것이 드러났다: `sector_map` 이 비면 `trigger_batch._build_topdown_pool` 이 `return []` 하고 `trigger_macro_sector_leader` 가 모든 티커를 건너뛰어 **v2.6.0 하이브리드 탑다운 종목선정이 통째로 무력화**되어 있었다
 - [ ] 네이버 스크래핑의 안정성·차단 위험. 일 1 회 캐시로 충분한가
 
 ---
@@ -172,7 +172,7 @@ mcp_agent.config.yaml (env 없음)
 | Risk | Likelihood | Mitigation |
 |------|------------|------------|
 | ~~토스 수급 조회 기간이 짧다~~ | ~~H~~ **해소** | 측정 오류였다. 2 년 범위 639 행 확인 → Phase 1 계획의 Notes 참조 |
-| 네이버 업종 체계가 KRX 와 달라 기존 `sector` 값과 불일치 | **H** | Phase 3 에서 DB 기존 값과 대조. `MAX_SAME_SECTOR` 판정에 영향 |
+| ~~네이버 업종 체계가 기존 `sector` 값과 불일치~~ | ~~H~~ **해소** | 별개 경로였다. DB `sector` 는 AI 생성 라벨(`scenario.get("sector")`)이고 `MAX_SAME_SECTOR` 는 그것을 본다. `sector_map` 은 매크로 어휘와 탑다운 선정에만 쓰이며, 어휘가 `sector_map.values()` 에서 파생되므로 양쪽이 구조적으로 일치한다 |
 | 네이버 스크래핑 차단 | M | 일 1 회 캐시. 실패 시 기존처럼 경고 후 degrade |
 | 자체 서버가 덮지 않는 도구를 에이전트가 호출 | L | `load_all_tickers` 는 프롬프트가 금지, `get_stock_fundamental` 은 아카이브 전용 (측정 완료) |
 | 조용한 실패가 남는다 | **H** | Phase 4. 이 문제가 오래 안 보인 이유가 그것이다 |
@@ -185,7 +185,7 @@ mcp_agent.config.yaml (env 없음)
 |---|-------|-------------|--------|----------|---------|----------|
 | 1 | 수급 페이지 크기 수정 | `_PAGE` 를 엔드포인트별로 분리, 수급 100 | complete | with 2 | - | [plan](../plans/completed/toss-investor-flow-page-size.plan.md) |
 | 2 | MCP 서버 전환 | config·프리페치를 자체 서버로, 자격증명 제거, 전수 검증 | complete | with 1 | - | [plan](../plans/completed/kospi-kosdaq-mcp-switch.plan.md) |
-| 3 | 섹터 capability 신설 | 네이버 소스 + 체인 capability + `get_sector_info` | pending | - | 2 | - |
+| 3 | 섹터 capability 신설 | 네이버 소스 + 체인 capability + `get_sector_info` | complete | - | 2 | - |
 | 4 | 조용한 실패 제거 | 도구 실패가 눈에 띄게, 회귀 고정 | pending | - | 1, 2, 3 | - |
 
 ### Phase Details

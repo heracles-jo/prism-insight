@@ -132,3 +132,9 @@ class FdrSource:
         if row.empty:
             raise Unavailable(f"{ticker} not in the listing snapshot")
         return str(row.iloc[0]["Name"])
+
+    def sector_map(self, market: str) -> dict[str, str]:
+        """`StockListing` has a Sector column, but it holds KRX listing tiers
+        (벤처기업부, 중견기업부) rather than industries, and its Industry column
+        is KSIC prose too long to use as a label. Measured on 2872 rows."""
+        raise Unsupported("FinanceDataReader publishes no usable sector classification")

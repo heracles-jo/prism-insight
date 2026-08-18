@@ -55,6 +55,7 @@ __all__ = [
     "get_market_cap_by_date",
     "get_market_fundamental_by_date",
     "get_market_ohlcv_by_date",
+    "get_market_sector_map",
     "get_market_ticker_name",
     "get_market_trading_volume_by_date",
     "get_market_trading_volume_by_investor",
@@ -143,6 +144,35 @@ def get_index_ohlcv_by_date(
     start_date: str, end_date: str, index_ticker: str
 ) -> pd.DataFrame:
     return _empty_on_exhaustion("index_history", str(index_ticker), start_date, end_date)
+
+
+def get_market_sector_map(market: str = "KOSPI") -> dict[str, str]:
+    """Ticker to sector name for the whole market, or {} when nothing answers.
+
+    Returns a dict rather than a frame, so it cannot go through
+    `_empty_on_exhaustion` — that helper's empty DataFrame is the wrong shape
+    for every caller here.
+
+    The configured chain is asked first, then Naver regardless of whether the
+    operator listed it. Every other capability has several providers and the
+    chain is a choice among equivalents; this one has exactly one provider, so
+    honouring an order that omits it would mean handing back an empty map. That
+    is not a harmless gap: `trigger_batch` reads this by ticker and returns no
+    candidates at all without it, which disables the top-down half of stock
+    selection while the batch still reports success.
+    """
+    try:
+        result = default_chain().fetch("sector_map", market)
+        if isinstance(result, dict) and result:
+            return result
+    except Unavailable as exc:
+        logger.debug("sector map not in the configured chain: %s", exc)
+
+    try:
+        return NaverSource().sector_map(market)
+    except (Unavailable, Unsupported) as exc:
+        logger.error("sector map unavailable: %s", exc)
+        return {}
 
 
 def get_market_cap_by_date(

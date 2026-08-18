@@ -333,3 +333,9 @@ class TossSource:
                 if name:
                     return name
         raise Unavailable(f"Toss returned no name for {ticker}")
+
+    def sector_map(self, market: str) -> dict[str, str]:
+        """Toss publishes no industry classification. `/api/v1/stocks` carries
+        market, currency and trading status, but not what business a
+        company is in."""
+        raise Unsupported("Toss publishes no sector classification")
