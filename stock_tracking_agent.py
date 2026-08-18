@@ -201,7 +201,10 @@ class StockTrackingAgent:
     SCORE_CONSIDER = 7  # Consider buying
     SCORE_UNSUITABLE = 6  # Unsuitable for buying
 
-    def __init__(self, db_path: str = "stock_tracking_db.sqlite", telegram_token: str = None, enable_journal: bool = None):
+    # Anchored to this file, not the CWD: the seller tools resolve the DB the
+    # same way, and a cron started from another directory used to split the
+    # buy loop and the sell loops across two different database files.
+    def __init__(self, db_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_tracking_db.sqlite"), telegram_token: str = None, enable_journal: bool = None):
         """
         Initialize agent
 
@@ -515,11 +518,20 @@ class StockTrackingAgent:
         Toss has one account, so the list has one entry. Multi-account fan-out
         stays a KIS feature, which is what `accounts:` in kis_devlp.yaml is.
         """
-        from trading.brokers.settings import primary_account_scope, selected_broker, TOSS
+        from trading.brokers.settings import (
+            buy_amount,
+            primary_account_scope,
+            selected_broker,
+            TOSS,
+        )
 
         if selected_broker() == TOSS:
             account_key, name, product, _mode = primary_account_scope("kr")
-            return [{"account_key": account_key, "name": name, "product": product}]
+            # buy_amount_krw is the key regime_policy.configured_entry_amount
+            # reads; kis_auth fills it for KIS accounts, so its absence here
+            # blocked every rebound-pilot entry under Toss.
+            return [{"account_key": account_key, "name": name, "product": product,
+                     "buy_amount_krw": buy_amount("kr")}]
 
         default_mode = str(_kis_auth().getEnv().get("default_mode", "demo")).strip().lower()
         svr = "vps" if default_mode == "demo" else "prod"

@@ -107,8 +107,13 @@ US_ENTRY_POINTS = [
         "us_stock_tracking_agent",
         marks=pytest.mark.xfail(
             strict=True,
-            reason="module-scope spec_from_file_location of kis_auth "
-                   "(prism-us/us_stock_tracking_agent.py:195-199) — Phase 2",
+            reason="the module-scope kis_auth load this froze is fixed (P0 #5), "
+                   "but the probe uncovered an older breakage underneath: the "
+                   "module's cores import resolves to the ROOT cores package "
+                   "(sys.path.insert(0, PROJECT_ROOT) outranks prism-us), so "
+                   "create_us_* names are missing and a clean import dies before "
+                   "reaching anything KIS. Tests only import this module through "
+                   "sys.modules stubs. Phase 5 fixes the shadowing.",
         ),
     ),
     "us_trigger_batch",
@@ -216,7 +221,6 @@ def _loads_kis_by_path(call: ast.Call) -> bool:
 # migration-audit phase that removes it; a fixed file left in this set fails
 # the stale check below, which is what forces the list to shrink.
 KNOWN_PATH_LOAD_OFFENDERS = {
-    "prism-us/us_stock_tracking_agent.py",     # Phase 2 (P0 #5)
     "examples/generate_us_dashboard_json.py",  # Phase 3 (KIS_US_AVAILABLE gate)
 }
 

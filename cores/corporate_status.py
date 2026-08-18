@@ -83,6 +83,18 @@ async def fetch_status_codes(tickers, account_name: Optional[str] = None) -> dic
     uniq = [str(t).strip() for t in (tickers or []) if str(t or "").strip()]
     if not uniq:
         return out
+
+    # iscd_stat_cls_code는 KIS 시세 응답의 필드라 이 탐지는 KIS 전용이다.
+    # 브로커 게이트 없이 KIS 임포트를 시도하면 Toss 설치에서 아래 except가
+    # 조용히 {}를 돌려줘 TIER0 자동탐지가 꺼진 사실이 어디에도 남지 않았다.
+    from trading.brokers.settings import selected_broker, TOSS
+    if selected_broker() == TOSS:
+        logger.warning(
+            "종목상태코드 자동탐지는 KIS 전용입니다 — broker=toss에서는 건너뜁니다 "
+            "(상장폐지/거래정지 TIER0 자동탐지 비활성, 매도 본로직은 정상)"
+        )
+        return out
+
     try:
         from trading.domestic_stock_trading import AsyncTradingContext
         async with AsyncTradingContext(account_name=account_name) as trading:

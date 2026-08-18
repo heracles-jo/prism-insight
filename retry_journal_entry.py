@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import asyncio
+from pathlib import Path
 import json
 import logging
 import sqlite3
@@ -186,7 +187,8 @@ async def retry_all_missing(db_path: str):
 
 def main():
     parser = argparse.ArgumentParser(description='Trading journal retry script')
-    parser.add_argument('--db-path', default='stock_tracking_db.sqlite',
+    parser.add_argument('--db-path',
+                       default=str(Path(__file__).resolve().parent / 'stock_tracking_db.sqlite'),
                        help='Database path')
     parser.add_argument('--id', type=int, help='Trade ID')
     parser.add_argument('--ticker', help='Ticker code (recent trade)')

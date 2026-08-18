@@ -139,8 +139,6 @@ CALLED_ON_TRADERS = {
 KNOWN_CONTRACT_GAPS = {
     ("tools/fill_chaser.py", "get_revisable_orders"): "toss",        # Phase 5
     ("tools/fill_chaser.py", "get_unfilled_orders"): "toss",         # Phase 5
-    ("prism-us/us_stock_tracking_agent.py", "is_market_open"): "toss+port",             # Phase 2
-    ("prism-us/us_stock_tracking_agent.py", "is_reserved_order_available"): "toss+port",  # Phase 2
 }
 
 
@@ -186,13 +184,6 @@ def test_broker_port_method_calls_match_the_implementations():
 # ── Configuration keys that exist but are never read ─────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="settings.buy_amount() has zero production callers — "
-           "trading/brokers/factory.py:107 reads only the env override, so "
-           "toss_config.yaml's default_unit_amount never reaches the order "
-           "path and the adapter's hardcoded 100_000 fills in. Phase 2 (P0 #1).",
-)
 def test_the_configured_buy_amount_reaches_the_order_path():
     """Editing default_unit_amount in toss_config.yaml must change order size.
 

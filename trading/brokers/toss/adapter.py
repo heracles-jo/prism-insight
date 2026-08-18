@@ -342,6 +342,33 @@ class TossBroker:
                     return session
         return None
 
+    def is_market_open(self, *, now: datetime.datetime | None = None) -> bool:
+        """True while an order can be placed right now.
+
+        US: any of the four Toss sessions counts — the day market makes Korean
+        daytime tradeable, which is the whole reason a Korean batch can trade US
+        names here. KR: the canonical regular window only; closing-price orders
+        are unsupported on Toss, so 'closing' is not open for this broker.
+
+        Exists because the US tracking loop asks its trader this before
+        deciding whether an order would queue; under KIS the trader answers,
+        and a missing answer here read as "will queue" and forced full exits.
+        """
+        if self.market == "US":
+            return self.open_us_session(now=now) is not None
+        from prism_core.time_windows import domestic_order_window
+
+        return domestic_order_window(now) == "regular"
+
+    def is_reserved_order_available(self, *, now: datetime.datetime | None = None) -> bool:
+        """Always False: Toss has no time-based reserved orders.
+
+        The order methods raise `BrokerUnsupported` for the same reason; this
+        is the predicate form so callers take their no-queue fallback instead
+        of discovering the fact as an AttributeError.
+        """
+        return False
+
     # ── Fractional quantities ─────────────────────────────────────────────────
 
     # Toss accepts six decimal places; more is `400 fractional-quantity-scale-exceeded`.

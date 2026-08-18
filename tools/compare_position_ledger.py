@@ -19,7 +19,10 @@ from prism_core.positions import PositionStore
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db-path", default="stock_tracking_db.sqlite")
+    parser.add_argument(
+        "--db-path",
+        default=str(Path(__file__).resolve().parents[1] / "stock_tracking_db.sqlite"),
+    )
     parser.add_argument(
         "--market",
         choices=("kr", "us", "both"),

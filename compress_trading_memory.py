@@ -48,6 +48,11 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+# Anchored to this file so a cron started from another directory reads the
+# same DB as the tracking agents (which anchor the same way).
+DEFAULT_DB_PATH = str(Path(__file__).resolve().parent / "stock_tracking_db.sqlite")
+from pathlib import Path
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -129,7 +134,7 @@ def _log_journal_influence_stats(cursor, table: str = "trading_history", days: i
 
 
 async def run_compression(
-    db_path: str = "stock_tracking_db.sqlite",
+    db_path: str = DEFAULT_DB_PATH,
     layer1_age_days: int = 7,
     layer2_age_days: int = 30,
     min_entries: int = 3,
@@ -380,7 +385,7 @@ def _load_us_compression_manager():
 
 
 async def run_us_compression(
-    db_path: str = "stock_tracking_db.sqlite",
+    db_path: str = DEFAULT_DB_PATH,
     layer1_age_days: int = 7,
     layer2_age_days: int = 30,
     min_entries: int = 3,
@@ -511,7 +516,7 @@ Examples:
     parser.add_argument(
         "--db-path",
         type=str,
-        default="stock_tracking_db.sqlite",
+        default=DEFAULT_DB_PATH,
         help="Path to SQLite database (default: stock_tracking_db.sqlite)"
     )
     parser.add_argument(

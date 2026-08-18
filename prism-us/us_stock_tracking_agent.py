@@ -31,6 +31,7 @@ import sys
 import traceback
 import importlib.util as _ilu
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 
@@ -192,11 +193,44 @@ except ImportError as e:
     )
     from tracking.journal import USJournalManager
     from tracking.compression import USCompressionManager
-# Load kis_auth from main project trading/ (prism-us/trading/ has no kis_auth)
+# trading/kis_auth.py is loaded on demand, not here: it reads kis_devlp.yaml
+# at module scope, so loading it at import time made this agent unstartable on
+# a Toss-only install that has no KIS config (migration audit P0 #5). Loaded
+# by file path because prism-us/trading/ shadows the root trading package —
+# same idiom and cache pattern as _load_root_broker_settings below.
 import importlib.util as _importlib_util
-_kis_auth_spec = _importlib_util.spec_from_file_location("kis_auth", PROJECT_ROOT / "trading/kis_auth.py")
-ka = _importlib_util.module_from_spec(_kis_auth_spec)
-_kis_auth_spec.loader.exec_module(ka)
+
+
+def _kis_auth():
+    """KIS auth helpers, loaded on demand (KIS account paths only)."""
+    module_name = "kis_auth"
+    cached = sys.modules.get(module_name)
+    if cached is not None:
+        return cached
+
+    spec = _importlib_util.spec_from_file_location(
+        module_name, PROJECT_ROOT / "trading/kis_auth.py"
+    )
+    module = _importlib_util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _mask_account_number(account_number: str | None) -> str:
+    """Mask an account number for safe logging.
+
+    A copy of `kis_auth.mask_account_number` (and of the identical copy in the
+    KR agent, stock_tracking_agent._mask_account_number): pure string work that
+    sits in a module which reads kis_devlp.yaml on import, so calling the
+    original made every log line that names an account crash on a Toss install.
+    """
+    if not account_number:
+        return ""
+    account_str = str(account_number)
+    if len(account_str) <= 4:
+        return "*" * len(account_str)
+    return f"{account_str[:2]}{'*' * (len(account_str) - 4)}{account_str[-2:]}"
 
 
 def _load_root_broker_settings():
@@ -527,7 +561,10 @@ class USStockTrackingAgent:
 
     def __init__(
         self,
-        db_path: str = "stock_tracking_db.sqlite",
+        # Anchored to prism-us/ (this file's directory) — the same file the
+        # relative default resolved to when run from prism-us, minus the CWD
+        # dependence. NOT the repo root: the US loop keeps its own DB.
+        db_path: str = str(Path(__file__).resolve().parent / "stock_tracking_db.sqlite"),
         telegram_token: str = None,
         enable_journal: bool = None
     ):
@@ -853,8 +890,13 @@ class USStockTrackingAgent:
         settings = _load_root_broker_settings()
         if settings.selected_broker() == settings.TOSS:
             account_key, name, product, _mode = settings.primary_account_scope("us")
-            return [{"account_key": account_key, "name": name, "product": product}]
+            # buy_amount_usd is the key regime_policy.configured_entry_amount
+            # reads; kis_auth fills it for KIS accounts, so its absence here
+            # degraded every rebound-pilot entry under Toss.
+            return [{"account_key": account_key, "name": name, "product": product,
+                     "buy_amount_usd": settings.buy_amount("us")}]
 
+        ka = _kis_auth()
         default_mode = str(ka.getEnv().get("default_mode", "demo")).strip().lower()
         svr = "vps" if default_mode == "demo" else "prod"
         return ka.get_configured_accounts(svr=svr, market="us")
@@ -882,9 +924,9 @@ class USStockTrackingAgent:
         parts = account_key.split(":")
         if len(parts) == 3:
             scope, account_number, product = parts
-            return f"{account_name} ({scope}:{ka.mask_account_number(account_number)}:{product})"
+            return f"{account_name} ({scope}:{_mask_account_number(account_number)}:{product})"
 
-        return f"{account_name} ({ka.mask_account_number(account_key)})"
+        return f"{account_name} ({_mask_account_number(account_key)})"
 
     def _normalize_decision(self, decision: str) -> str:
         """Normalize decision string for comparison.
@@ -2725,8 +2767,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             # snapshot the ticker's total broker qty ONCE per pass and distribute
             # from (snapshot - already_ordered), so unfilled limit/reserved orders
             # cannot cause an over-sell on later iterations of the same ticker.
-            pass_total_qty: Dict[str, int] = {}   # ticker -> snapshot total qty
-            pass_sold_qty: Dict[str, int] = {}    # ticker -> cumulative ordered qty
+            # Quantities are int under KIS but Decimal under Toss (fractional
+            # US shares), so the accumulators must not force a float or int.
+            pass_total_qty: Dict[str, Any] = {}   # ticker -> snapshot total qty
+            pass_sold_qty: Dict[str, Any] = {}    # ticker -> cumulative ordered qty
             # FIX 1 — tickers already FULL-exited this pass (all rows sold at once
             # because the order had to be queued). Their remaining DB rows were
             # already removed, so skip them when the loop reaches them.
@@ -2882,7 +2926,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                             pass_total_qty[ticker] = await asyncio.to_thread(
                                                 trading.get_holding_quantity, ticker
                                             )
-                                            pass_sold_qty[ticker] = 0
+                                            pass_sold_qty[ticker] = Decimal("0")
                                         available = pass_total_qty[ticker] - pass_sold_qty[ticker]
                                         sell_quantity = compute_us_fractional_sell_quantity(available, remaining_rows)
                                         pass_sold_qty[ticker] += sell_quantity
