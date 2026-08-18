@@ -55,16 +55,29 @@ def _dict_to_markdown(data: dict, title: str = "") -> str:
 
 
 def _get_mcp_server_module():
-    """Import kospi_kosdaq_stock_server module for direct library calls.
+    """Market-data module used for direct library calls.
+
+    Returns the repo's own server rather than the PyPI
+    `kospi_kosdaq_stock_server`. That package scrapes KRX Data Marketplace with
+    an id/password session, and once KRX made login mandatory it stopped
+    answering at all — its pykrx fallback is switched off for the same reason.
+    Every tool then returned an error dict, quietly: the batch still finished
+    and the report was still produced, just with no moving averages, RSI, MACD
+    or investor flows.
+
+    The repo module exposes the same function names, argument order and dict
+    shape on top of the market-data source chain, so nothing downstream changes
+    except where the numbers come from. `get_sector_info` is the one it does
+    not carry yet; the caller already guards that.
 
     Returns:
-        The kospi_kosdaq_stock_server module, or None if import fails
+        The market data module, or None if import fails
     """
     try:
-        import kospi_kosdaq_stock_server as server
+        import cores.market_data.mcp_server as server
         return server
     except ImportError:
-        logger.warning("kospi_kosdaq_stock_server module not available, prefetch disabled")
+        logger.warning("market data module not available, prefetch disabled")
         return None
 
 

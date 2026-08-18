@@ -26,21 +26,33 @@ mcp:
           FIRECRAWL_API_KEY: "example key"
 
     kospi_kosdaq:
+      # The repo's own server, running on the market-data source chain
+      # (PRISM_MARKET_DATA_SOURCES, default krx,fdr). Tool names, argument order
+      # and return shapes match the PyPI `kospi-kosdaq-stock-server`, so agent
+      # prompts are unchanged — only where the numbers come from.
+      #
+      # That package scrapes KRX Data Marketplace with an id/password session.
+      # Once KRX made login mandatory it stopped answering at all, and its pykrx
+      # fallback is disabled for the same reason, so every tool returned an
+      # error dict. Quietly: the batch still finished and the report was still
+      # produced, just with no moving averages, RSI, MACD or investor flows.
+      #
+      # command: this server imports repo code, so it needs the interpreter that
+      # has the repo's dependencies. A bare `python3` is whatever PATH resolves
+      # to — fine when the venv is active, wrong on a host whose system python3
+      # lacks `mcp`. Note that mcp-agent does NOT expand ${VAR:-default} here
+      # (measured), so this cannot be made configurable the way
+      # cores/llm/mcp_servers.yaml does it; set PATH or edit this line.
       command: "python3"
       args:
         [
           "-m",
-          "kospi_kosdaq_stock_server"
+          "cores.market_data.mcp_server"
         ]
       env:
-        # Option 1: KRX Direct Login (Recommended)
-        KRX_ID: "your_krx_id"
-        KRX_PW: "your_krx_password"
-        KRX_LOGIN_METHOD: "krx"  # "krx" (default) or "kakao"
-        # Option 2: Kakao SNS Login (uncomment if using Kakao)
-        # KAKAO_ID: "your_kakao_id"
-        # KAKAO_PW: "your_kakao_password"
-        # KRX_LOGIN_METHOD: "kakao"
+        # The child must be able to import the repo. "." is its cwd, which is
+        # the repo root the orchestrator runs from.
+        PYTHONPATH: "."
 
     perplexity:
       command: "npx"

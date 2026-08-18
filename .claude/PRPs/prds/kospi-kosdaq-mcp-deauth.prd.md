@@ -154,7 +154,7 @@ mcp_agent.config.yaml (env 없음)
 **Architecture Notes**
 
 - **대체본은 이미 계약이 맞춰져 있다.** 도구명·인자·반환·**서버명(`kospi_kosdaq`)** 이 동일하다. `report_generator` 프롬프트 무수정
-- **문서가 이미 이 방향을 안내한다** — `README_DOCKER.md:200`, `README_DOCKER_ko.md:198`, `docs/SETUP_ko.md:180`, `cores/llm/mcp_servers.yaml:35`. **config 만 옛 경로에 머물러 있다**
+- **소비 경로가 셋이다** (Phase 2 조사에서 정정). 리포트 경로(`config_loader` → `cores/llm/mcp_servers.yaml`)는 **이미 전환돼 있었고**, 분석 에이전트는 `mcp_agent.config.yaml`, 프리페치(`cores/data_prefetch.py`)는 **MCP 를 아예 우회해 직접 임포트**한다 — config 를 고쳐도 닿지 않는다. 에이전트가 `server_names=[] if prefetched_data else [...]` 로 만들어지므로 프리페치가 주 경로다
 - **수급 400 의 원인이 특정됐다.** `cores/market_data/toss_source.py:41` 의 `_PAGE = 200` 이 `investor-trading` 의 `count` 상한 100 을 초과한다. 이분 탐색으로 100 OK / 101 FAIL 확인. `_PAGE` 는 캔들(154 행)과 공유되고 캔들은 200 이 통하므로 **엔드포인트별로 분리해야 한다**
 - **섹터는 체인에 없다.** 어떤 소스도 sector capability 가 없다(측정). FDR `StockListing` 컬럼에 없고, 토스 `/api/v1/stocks` 에도 없다. 네이버가 인증 없이 제공한다
 
@@ -184,7 +184,7 @@ mcp_agent.config.yaml (env 없음)
 | # | Phase | Description | Status | Parallel | Depends | PRP Plan |
 |---|-------|-------------|--------|----------|---------|----------|
 | 1 | 수급 페이지 크기 수정 | `_PAGE` 를 엔드포인트별로 분리, 수급 100 | complete | with 2 | - | [plan](../plans/completed/toss-investor-flow-page-size.plan.md) |
-| 2 | MCP 서버 전환 | config·프리페치를 자체 서버로, 자격증명 제거, 전수 검증 | in-progress | with 1 | - | [plan](../plans/kospi-kosdaq-mcp-switch.plan.md) |
+| 2 | MCP 서버 전환 | config·프리페치를 자체 서버로, 자격증명 제거, 전수 검증 | complete | with 1 | - | [plan](../plans/completed/kospi-kosdaq-mcp-switch.plan.md) |
 | 3 | 섹터 capability 신설 | 네이버 소스 + 체인 capability + `get_sector_info` | pending | - | 2 | - |
 | 4 | 조용한 실패 제거 | 도구 실패가 눈에 띄게, 회귀 고정 | pending | - | 1, 2, 3 | - |
 
