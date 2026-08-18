@@ -111,7 +111,7 @@ def test_the_repo_server_starts_as_a_module():
     assert "True" in result.stdout
 
 
-def test_a_variable_with_a_default_is_not_reported_as_missing():
+def test_a_variable_with_a_default_is_not_reported_as_missing(monkeypatch):
     """mcp_doctor's own rule: a false positive hides a real breakage.
 
     `${VAR:-default}` is the author saying what to do when the variable is
@@ -122,12 +122,18 @@ def test_a_variable_with_a_default_is_not_reported_as_missing():
     sys.path.insert(0, str(REPO_ROOT))
     from tools.mcp_doctor import _check_env
 
+    # Synthetic names, explicitly cleared. Naming real variables made this
+    # depend on the developer's own `.env` — it started failing the day
+    # FIRECRAWL_API_KEY was legitimately added to one.
+    monkeypatch.delenv("PRISM_PROBE_OPTIONAL", raising=False)
+    monkeypatch.delenv("PRISM_PROBE_REQUIRED", raising=False)
+
     optional = _check_env(
-        {"PRISM_REPORT_DATA_SOURCES": ""},
-        {"PRISM_REPORT_DATA_SOURCES": "${PRISM_REPORT_DATA_SOURCES:-}"},
+        {"PRISM_PROBE_OPTIONAL": ""},
+        {"PRISM_PROBE_OPTIONAL": "${PRISM_PROBE_OPTIONAL:-}"},
     )
     required = _check_env(
-        {"FIRECRAWL_API_KEY": ""}, {"FIRECRAWL_API_KEY": "${FIRECRAWL_API_KEY}"}
+        {"PRISM_PROBE_REQUIRED": ""}, {"PRISM_PROBE_REQUIRED": "${PRISM_PROBE_REQUIRED}"}
     )
 
     assert optional[0]["set"] is True, "a defaulted variable is a choice, not a gap"

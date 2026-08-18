@@ -95,6 +95,26 @@ class SourceChain:
         if not sources:
             raise ValueError("a chain needs at least one source")
         self._sources = sources
+        # What has already been said. A first source that is down stays down for
+        # the whole run, so repeating it per call buries everything else: five
+        # ticker lookups produced ten identical warnings, and a morning batch
+        # produces hundreds. Reported once at WARNING, then demoted — the state
+        # is still stated, just not restated.
+        self._announced: set[tuple[str, str, str]] = set()
+
+    def _announce(self, kind: str, source_name: str, capability: str, message: str, *args) -> None:
+        """WARNING the first time this exact situation occurs, DEBUG after.
+
+        Silence is not the alternative to noise here: a chronically failing
+        primary source has to appear in the log, or this becomes the problem the
+        `[FALLBACK]` line was added to catch.
+        """
+        key = (kind, source_name, capability)
+        if key in self._announced:
+            logger.debug(message, *args)
+            return
+        self._announced.add(key)
+        logger.warning(message, *args)
 
     @property
     def names(self) -> list[str]:
@@ -120,26 +140,30 @@ class SourceChain:
                 continue
             except Unavailable as exc:
                 attempts.append(f"{source.name}: {exc}")
-                logger.warning(
-                    "%s unavailable for %s; trying next source", source.name, capability
+                self._announce(
+                    "unavailable", source.name, capability,
+                    "%s unavailable for %s; trying next source", source.name, capability,
                 )
                 continue
             except Exception as exc:  # noqa: BLE001 - a broken source must not stop the chain
                 attempts.append(f"{source.name}: {type(exc).__name__}: {exc}")
-                logger.warning(
+                self._announce(
+                    "raised", source.name, capability,
                     "%s raised on %s (%s); trying next source",
-                    source.name,
-                    capability,
-                    exc,
+                    source.name, capability, exc,
                 )
                 continue
 
             if source is not self._sources[0]:
-                logger.warning(
+                # The call succeeded. Warning on it reported a working system as
+                # broken — a deployment report read this line as evidence that
+                # company names had been demoted to ticker codes, when the name
+                # had in fact been returned. The reason the primary failed is
+                # already stated above, once, at WARNING.
+                self._announce(
+                    "fallback", source.name, capability,
                     "[FALLBACK] %s answered %s after %s",
-                    source.name,
-                    capability,
-                    ", ".join(attempts) or "primary",
+                    source.name, capability, ", ".join(attempts) or "primary",
                 )
             return result
 

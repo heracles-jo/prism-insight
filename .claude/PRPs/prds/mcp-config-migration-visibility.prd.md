@@ -78,7 +78,7 @@ We'll know we're right when **`.env.example` 만 보고 설정한 새 호스트�
 
 ## Open Questions
 
-- [ ] 체인 FALLBACK 로그를 INFO 로 내리면, 첫 소스가 상시 실패하는 상태(지금의 KRX)를 **어떻게 알아채는가**? 매 호출 WARNING 은 소음이지만 완전한 침묵은 Phase 4 가 고친 문제로 되돌아간다. 사이클당 1회 요약이 답일 수 있으나 미검증
+- [x] ~~FALLBACK 을 내리면 상시 실패를 어떻게 알아채는가~~ — **해소. 답은 레벨을 내리는 것이 아니라 반복을 없애는 것이었다.** `(종류, 소스, capability)` 별로 **처음 한 번만 WARNING**, 이후는 DEBUG 로 강등한다. 상태는 여전히 기록되고 반복만 사라진다. 실측: 종목 5개 조회 WARNING 10건 → 2건, KRX 가 죽어 있다는 사실은 그대로 남는다
 - [x] ~~인터프리터 검증 범위~~ — **해소.** 레지스트리의 파이썬 서버는 둘 다 `python -m <모듈>` 형태이므로 **그 모듈을 임포트할 수 있는지**를 본다. `import mcp` 보다 강하고 기동이 실제로 하는 일과 같으며, mcp·리포 의존성·PYTHONPATH 를 한 번에 덮는다. npx/uv 서버는 대상이 아니다(패키지 소유자의 문제).
 - [ ] 보고된 호스트에서 실제로 종목명이 강등됐는지, 아니면 로그를 보고 추정한 것인지 **확인되지 않았다**. 이 저장소에서는 두 체인 모두 정상 해석한다
 - [ ] **이 호스트의 `.env` 에는 네 키가 하나도 없다**(Phase 2 구현 중 확인). 그래서 여기서 보이는 `firecrawl`·`perplexity` FAIL 은 거짓이 아니라 진짜다. 거짓 FAIL 은 키가 `.env` 에 있는 보고자 호스트에서 일어난다 — 프로브 키를 넣어 재현·수정 확인함
@@ -165,7 +165,7 @@ When **패치를 반영하고 새 호스트에서 처음 돌릴 때**, I want to
 | 1 | 설정 안내 | `.env.example` + 문서에 새 변수 **6종**과 이유 | complete | with 2 | - | [plan](../plans/completed/mcp-env-setup-guidance.plan.md) |
 | 2 | 진단이 런타임과 같은 것을 보게 | `mcp_doctor` 가 `.env` 로드 | complete | with 1 | - | [plan](../plans/completed/mcp-doctor-loads-dotenv.plan.md) |
 | 3 | 인터프리터 검증 | 명령 존재가 아니라 서버 기동 가능 여부 | complete | - | 2 | - |
-| 4 | 복구된 실패의 로그 레벨 | 체인 FALLBACK, 그리고 상시 실패를 알아채는 법 | pending | - | - | - |
+| 4 | 복구된 실패의 로그 레벨 | 체인 FALLBACK, 그리고 상시 실패를 알아채는 법 | complete | - | - | - |
 
 ### Phase Details
 

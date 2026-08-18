@@ -9,6 +9,8 @@ had a second source; the report path did not.
 
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 import pytest
 
@@ -348,3 +350,99 @@ class TestRealSources:
                 "ticker_name",
             ):
                 assert callable(getattr(source, verb)), f"{source.name}.{verb}"
+
+
+class TestFallbackLogging:
+    """A broken source must be stated once, not restated on every call.
+
+    Both halves matter and they pull against each other. Repeating the same
+    warning per call buried everything else — five ticker lookups produced ten
+    identical lines and a morning batch produces hundreds — and a deployment
+    report read the `[FALLBACK]` line as evidence that company names had been
+    demoted to ticker codes, when the name had in fact been returned.
+
+    Going quiet is not the fix. A primary that fails all day has to appear in
+    the log, or this becomes the silence the fallback line was added to catch.
+    """
+
+    def _chain(self):
+        broken = FakeSource("krx", raises=Unavailable("no credentials"))
+        working = FakeSource("fdr", result="삼성전자")
+        return SourceChain([broken, working])
+
+    def test_a_repeated_failure_is_warned_about_once(self, caplog):
+        chain = self._chain()
+
+        with caplog.at_level(logging.DEBUG, logger="cores.market_data.source"):
+            for _ in range(5):
+                chain.fetch("ticker_name", "005930")
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        unavailable = [r for r in warnings if "unavailable" in r.getMessage()]
+
+        assert len(unavailable) == 1, f"said it {len(unavailable)} times"
+
+    def test_the_repeats_are_still_recorded_at_debug(self, caplog):
+        """Demoted, not dropped — the detail is there when someone looks."""
+        chain = self._chain()
+
+        with caplog.at_level(logging.DEBUG, logger="cores.market_data.source"):
+            for _ in range(3):
+                chain.fetch("ticker_name", "005930")
+
+        debug = [r for r in caplog.records if r.levelno == logging.DEBUG]
+
+        assert debug, "the repeats vanished entirely"
+
+    def test_a_failing_primary_is_never_entirely_silent(self, caplog):
+        """The half that must not regress: one warning, not zero."""
+        chain = self._chain()
+
+        with caplog.at_level(logging.DEBUG, logger="cores.market_data.source"):
+            chain.fetch("ticker_name", "005930")
+
+        assert [r for r in caplog.records if r.levelno == logging.WARNING]
+
+    def test_each_capability_is_announced_separately(self, caplog):
+        """KRX failing prices and failing flows are two different facts."""
+        broken = FakeSource("krx", raises=Unavailable("no credentials"))
+        working = FakeSource("fdr", result="ok")
+        chain = SourceChain([broken, working])
+
+        with caplog.at_level(logging.DEBUG, logger="cores.market_data.source"):
+            chain.fetch("ticker_name", "005930")
+            chain.fetch("price_history", "005930", "20260101", "20260102")
+
+        warned = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "unavailable" in r.getMessage()
+        ]
+
+        assert len(warned) == 2
+        assert any("ticker_name" in m for m in warned)
+        assert any("price_history" in m for m in warned)
+
+    def test_the_fallback_line_does_not_repeat_either(self, caplog):
+        """It reads as a failure; on a chain that answered, it is not one."""
+        chain = self._chain()
+
+        with caplog.at_level(logging.DEBUG, logger="cores.market_data.source"):
+            for _ in range(4):
+                assert chain.fetch("ticker_name", "005930") == "삼성전자"
+
+        fallbacks = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING and "[FALLBACK]" in r.getMessage()
+        ]
+
+        assert len(fallbacks) == 1
+
+    def test_a_fresh_chain_speaks_again(self, caplog):
+        """The memory is per chain, so a new process starts by saying it once."""
+        with caplog.at_level(logging.DEBUG, logger="cores.market_data.source"):
+            self._chain().fetch("ticker_name", "005930")
+            caplog.clear()
+            self._chain().fetch("ticker_name", "005930")
+
+        assert [r for r in caplog.records if r.levelno == logging.WARNING]
