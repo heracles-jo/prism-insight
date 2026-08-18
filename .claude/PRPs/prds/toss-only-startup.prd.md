@@ -84,11 +84,18 @@ We'll know we're right when **`kis_devlp.yaml`이 전혀 없는 상태에서 모
 
 ## Open Questions
 
-- [ ] **`prism-us` 진입점은 어떻게 할 것인가?** `prism-us/trading/us_stock_trading.py:46`도 `kis_devlp.yaml`을 읽는다. 이번 범위에 넣을지, US는 별도로 다룰지.
-- [ ] `default_unit_amount_usd`(US 매수 금액)도 `toss_config.yaml`로 옮길 것인가? 현재 `TossBroker`는 `PRISM_BUY_AMOUNT_USD` 환경변수만 본다.
-- [ ] `accounts:` 다중 계좌 설정은 KIS 고유 개념이다. 토스는 `account_seq` 하나뿐인데, `MultiAccount*` 경로가 토스에서 어떻게 동작해야 하는가? (현재 미검증)
-- [ ] 진입점 8개는 내가 고른 표본이다. **전수 조사가 필요한가**, 아니면 tripwire 테스트로 충분한가?
-- [ ] `tracking/db_schema.py:326`이 오류 메시지에서 `kis_devlp.yaml`을 안내한다. 토스 사용자에게는 잘못된 안내인데, 메시지도 브로커별로 바꿀 것인가?
+**해결됨 (구현 중 실측으로 답이 남)**
+
+- [x] **진입점 표본으로 충분한가?** — **아니다.** Phase 3에서 규칙(AST + 임포트 인구조사)을 켜자마자 표본이 놓친 크래셔 2개가 나왔다: `weekly_insight_report.py:20`, `examples/generate_us_dashboard_json.py:90`. 표본으로는 못 잡는다는 근거가 그 자체로 나왔다.
+- [x] **`default_unit_amount_usd`를 `toss_config.yaml`로?** — **옮겼다.** Phase 1에서 `default_unit_amount`·`auto_trading`·`default_mode`와 함께 들어갔고, 우선순위는 환경변수 > 파일 > 코드 기본값.
+- [x] **`db_schema.py:326` 메시지를 브로커별로?** — **그렇다. 다만 메시지만의 문제가 아니었다.** 구 스키마 DB를 들고 갈아탄 설치는 `RuntimeError`로 **기동이 막혔다**(신규 설치는 마이그레이션을 건너뛰므로 무증상 — 그래서 인구조사에 안 잡혔다). `settings.primary_account_scope()`가 계좌 스코프를 브로커에서 가져오고, `broker_config_hint()`가 안내 문구 4곳을 대체한다.
+- [x] **`prism-us` 진입점** — **부분 편입.** `prism-us/tracking/db_schema.py`는 브로커 인식으로 전환했다(루트 `trading` 패키지가 가려지므로 `settings`를 경로로 로드하고 `kis_auth` 로더를 주입). `prism-us/trading/us_stock_trading.py`와 `us_pending_order_batch.py`는 **KIS 전용 코드로 확정**하고 tripwire allowlist에 넣었다 — 토스 설치는 팩토리가 이들을 고르지 않으므로 로드하지 않는다.
+
+**미해결**
+
+- [ ] `accounts:` 다중 계좌는 KIS 고유 개념이다. 토스는 `account_seq` 하나뿐인데 `MultiAccount*` 경로가 토스에서 어떻게 동작해야 하는가? **여전히 미검증.** 이번 작업은 마이그레이션이 쓰는 *단일* 주계좌 스코프만 다뤘다.
+- [ ] 실주문 미검증 — 토스에 모의투자 서버가 없어 검증 자체가 실거래다.
+- [ ] `us_stock_holdings`에 수량 컬럼이 없다("1행 ≈ 1주"). 소수점·부분 매도 시 DB와 브로커가 어긋날 수 있다 → Issue #5.
 
 ---
 
