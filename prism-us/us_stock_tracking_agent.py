@@ -2914,28 +2914,30 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             ) as _gate:
                                 _sellable = await asyncio.to_thread(_gate.is_market_open)
                                 if _sellable:
-                                    # An open session is not enough for a
-                                    # fractional holding: Toss accepts fractional
-                                    # orders only from the regular open until an
-                                    # hour before its close, and refuses a
-                                    # sub-share position outright outside it. The
-                                    # day market (09:00–16:50 KST) is open for
-                                    # most of a Korean batch's life, so without
-                                    # this the gate waved through exactly the
-                                    # holdings it exists to protect.
+                                    # An open session is not enough for a holding
+                                    # under one share. Toss takes fractional
+                                    # quantities only from the regular open until
+                                    # an hour before its close; outside that the
+                                    # adapter downgrades 1.68 to a sale of 1 and
+                                    # reports the 0.68 residual, but a sub-share
+                                    # position has no whole part to downgrade to
+                                    # and is refused. Only that case must skip —
+                                    # blocking the downgrade too would leave a
+                                    # stop-loss unable to sell anything at all.
                                     _held = await asyncio.to_thread(
                                         _gate.get_holding_quantity, ticker
                                     )
                                     _held_dec = Decimal(str(_held or 0))
-                                    if _held_dec != _held_dec.to_integral_value():
+                                    if _held_dec > 0 and _held_dec < 1:
                                         _sellable = await asyncio.to_thread(
                                             _gate.fractional_window_open
                                         )
                                         if not _sellable:
                                             logger.error(
-                                                f"{ticker} holds {_held_dec} shares but the "
-                                                f"Toss fractional window is shut; keeping the "
-                                                f"position for the next pass"
+                                                f"{ticker} holds {_held_dec} shares — under one "
+                                                f"share and the Toss fractional window is shut, "
+                                                f"so nothing can be sold; keeping the position "
+                                                f"for the next pass"
                                             )
                         except Exception as gate_err:  # noqa: BLE001 - see below
                             # Unknown session state is treated as "not sellable":

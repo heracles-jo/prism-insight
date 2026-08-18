@@ -38,8 +38,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Database path
-DB_PATH = PROJECT_ROOT / "stock_tracking_db.sqlite"
+# Database path — same chain as the US tracking agent, whose rows this reads.
+import os as _os
+
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(PROJECT_ROOT / ".env")
+except Exception:
+    pass
+
+DB_PATH = Path(_os.getenv("STOCK_TRACKING_DB") or (PROJECT_ROOT / "stock_tracking_db.sqlite"))
 
 # Import yfinance for price data
 try:

@@ -47,8 +47,21 @@ logger = logging.getLogger(__name__)
 
 KST = pytz.timezone('Asia/Seoul')
 
-# DB path (same as trading module)
-DB_PATH = Path(__file__).resolve().parent.parent / "stock_tracking_db.sqlite"
+# DB path — the same chain us_stock_tracking_agent resolves. It writes the
+# us_pending_orders rows this batch drains, so an override honoured by only one
+# of them means queued reserved orders are never found, let alone executed.
+import os as _os
+
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+except Exception:
+    pass
+
+DB_PATH = Path(
+    _os.getenv("STOCK_TRACKING_DB")
+    or (Path(__file__).resolve().parents[1] / "stock_tracking_db.sqlite")
+)
 
 
 def get_pending_orders(conn: sqlite3.Connection, today_str: str) -> list:

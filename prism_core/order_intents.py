@@ -84,6 +84,12 @@ def _normalize_quantity(value: Any) -> int | str | None:
     """
     if value is None or isinstance(value, (int, str)):
         return value
+    if isinstance(value, float):
+        # Via Decimal(str(...)), not Decimal(float): the latter would expand
+        # 0.84 into its full binary expansion. Integral floats must collapse to
+        # the same int a Decimal or an int would, because quantity feeds the
+        # idempotency key — 5, 5.0 and Decimal("5") are one order, not three.
+        value = Decimal(str(value))
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else str(value)
     return _text(value)
@@ -313,24 +319,48 @@ class IntentStore:
         # foreign_keys ON SQLite treats DROP TABLE as an implicit DELETE and
         # refuses it. This is SQLite's documented table-rebuild procedure.
         # The pragma is a no-op inside a transaction, so commit first.
-        conn.commit()
-        conn.execute("PRAGMA foreign_keys = OFF")
+        # Every step below is best-effort. The likeliest failure is another
+        # process holding the write lock, in which case the recovery statements
+        # fail for the same reason — so they are guarded too. An exception
+        # escaping here would take down IntentStore.__init__, and with it the
+        # ExecutionService for the whole pass.
+        try:
+            conn.commit()
+            conn.execute("PRAGMA foreign_keys = OFF")
+        except Exception:  # noqa: BLE001 - see above
+            logger.warning(
+                "[ORDER_INTENT] could not begin the quantity migration; leaving "
+                "the columns as they are", exc_info=True,
+            )
+            return
+
         try:
             for table, column in pending:
                 try:
                     self._rebuild_with_text_quantity(conn, table, column)
                     conn.commit()
-                except Exception:  # noqa: BLE001 - see the comment above
-                    conn.rollback()
-                    conn.execute(f"DROP TABLE IF EXISTS {table}__new")
-                    conn.commit()
+                except Exception:  # noqa: BLE001 - see above
                     logger.warning(
                         "[ORDER_INTENT] could not widen %s.%s to TEXT; fractional "
                         "quantities will read back as floats from that column",
                         table, column, exc_info=True,
                     )
+                    try:
+                        conn.rollback()
+                        conn.execute(f"DROP TABLE IF EXISTS {table}__new")
+                        conn.commit()
+                    except Exception:  # noqa: BLE001 - see above
+                        logger.warning(
+                            "[ORDER_INTENT] could not clean up %s__new either",
+                            table, exc_info=True,
+                        )
         finally:
-            conn.execute("PRAGMA foreign_keys = ON")
+            try:
+                conn.execute("PRAGMA foreign_keys = ON")
+            except Exception:  # noqa: BLE001 - see above
+                logger.warning(
+                    "[ORDER_INTENT] could not restore foreign_keys=ON", exc_info=True,
+                )
 
     @staticmethod
     def _declared_type(

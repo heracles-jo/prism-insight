@@ -194,6 +194,35 @@ def test_a_legacy_integer_column_is_widened_without_losing_rows(tmp_path):
 # ── A zero split must not liquidate the position ─────────────────────────────
 
 
+def test_equal_quantities_normalize_to_one_idempotency_key():
+    """quantity feeds the idempotency key, so 5, 5.0 and Decimal('5') must not
+    hash as three different orders."""
+    keys = {
+        _intent(q, key="same").idempotency_key
+        for q in (5, 5.0, Decimal("5"))
+    }
+    assert len(keys) == 1
+
+    from prism_core.order_intents import _normalize_quantity
+
+    assert _normalize_quantity(0.84) == "0.84"  # via str(), not the binary float
+
+
+def test_the_port_predicates_refuse_a_silent_none():
+    """A falsy answer reads as 'market shut' and forces a full exit, so an
+    implementation that inherits the Protocol and forgets them must break
+    loudly instead."""
+    from trading.brokers.base import BrokerPort
+
+    class Forgetful(BrokerPort):
+        name = "forgetful"
+        market = "US"
+
+    for method in ("is_market_open", "is_reserved_order_available"):
+        with pytest.raises(NotImplementedError):
+            getattr(Forgetful(), method)()
+
+
 def test_zero_split_refuses_rather_than_selling_everything():
     from trading.brokers.toss.adapter import TossBroker
 

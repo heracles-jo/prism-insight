@@ -107,7 +107,13 @@ def build_toss_broker(
     # config.buy_amount, not config.toss_buy_amount: the latter reads only the
     # env override, which left default_unit_amount in toss_config.yaml dead and
     # every order at the adapter's hardcoded default.
-    amount = buy_amount if buy_amount is not None else config.buy_amount(market)
+    # broker=TOSS explicitly: this function builds a Toss broker regardless of
+    # what PRISM_BROKER says, and re-deriving it would size a Toss order from
+    # kis_devlp.yaml whenever the two disagree (smoke test, direct context use).
+    amount = (
+        buy_amount if buy_amount is not None
+        else config.buy_amount(market, broker=config.TOSS)
+    )
     return TossBroker(
         client,
         market=market.upper(),

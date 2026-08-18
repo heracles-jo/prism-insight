@@ -124,6 +124,21 @@ def _mask_account_number(account_number: str | None) -> str:
     return f"{account_str[:2]}{'*' * (len(account_str) - 4)}{account_str[-2:]}"
 
 
+def _toss_selected() -> bool:
+    """Whether this install trades KR through Toss.
+
+    Answered without opening a broker context, and never raises: an
+    unreadable broker configuration is reported where it matters, and here
+    it only means "do not apply the Toss-specific session gate".
+    """
+    try:
+        from trading.brokers.settings import selected_broker, TOSS
+
+        return selected_broker() == TOSS
+    except Exception:  # noqa: BLE001 - see docstring
+        return False
+
+
 def _kis_auth():
     """KIS auth helpers, loaded on demand.
 
@@ -3218,6 +3233,35 @@ class StockTrackingAgent:
                     remaining_rows = get_existing_position_for_ticker(
                         self.cursor, ticker, account_key=stock.get("account_key")
                     ).get("row_count", 1)
+
+                    # Toss refuses an out-of-session KR order outright — there is
+                    # no queue and no closing-price order — but sell_stock below
+                    # deletes the row and books P&L BEFORE the order is placed.
+                    # Without this gate a refused sell left no record of the
+                    # position while the shares stayed at the broker. Skipping
+                    # keeps the row untouched, so the next pass retries normally.
+                    # (Mirrors the US gate in prism-us/us_stock_tracking_agent.)
+                    if current_price > 0 and _toss_selected():
+                        try:
+                            async with ExecutionService.domestic(
+                                account_name=stock.get("account_name"),
+                            ) as _gate:
+                                _sellable = await asyncio.to_thread(_gate.is_market_open)
+                        except Exception as gate_err:  # noqa: BLE001
+                            # Unknown session state counts as "not sellable":
+                            # keeping the position costs a cycle, destroying its
+                            # only record costs the position.
+                            logger.warning(
+                                f"{ticker} could not confirm a Toss KR session "
+                                f"({gate_err}); keeping the position for the next pass"
+                            )
+                            _sellable = False
+                        if not _sellable:
+                            logger.error(
+                                f"{ticker} KR market is not in its regular window — "
+                                f"skipping sell (position kept, row untouched)"
+                            )
+                            continue
 
                     # Process sell (deletes only this row when N>1, else the ticker)
                     sell_success = await self.sell_stock(stock, sell_reason)
