@@ -986,20 +986,27 @@ class TossBroker:
 
             market_value = item.get("marketValue") or {}
             profit_loss = item.get("profitLoss") or {}
-            portfolio.append(
-                {
-                    "stock_code": symbol,
-                    "stock_name": str(item.get("name") or symbol),
-                    "quantity": quantity,
-                    "avg_price": _num(item.get("averagePurchasePrice")),
-                    "current_price": _num(item.get("lastPrice")),
-                    "eval_amount": _num(market_value.get("amount")),
-                    "profit_amount": _num(profit_loss.get("amount")),
-                    # Toss gives a fraction; KIS gives a percentage. Callers
-                    # read the KIS convention.
-                    "profit_rate": round(_num(profit_loss.get("rate")) * 100, 2),
-                }
-            )
+            row = {
+                "stock_code": symbol,
+                "stock_name": str(item.get("name") or symbol),
+                "quantity": quantity,
+                "avg_price": _num(item.get("averagePurchasePrice")),
+                "current_price": _num(item.get("lastPrice")),
+                "eval_amount": _num(market_value.get("amount")),
+                "profit_amount": _num(profit_loss.get("amount")),
+                # Toss gives a fraction; KIS gives a percentage. Callers
+                # read the KIS convention.
+                "profit_rate": round(_num(profit_loss.get("rate")) * 100, 2),
+            }
+            if self.market == "US":
+                # KIS names this key differently per market — `stock_code` for
+                # KR, `ticker` for US — and US callers read `ticker`. Emitting
+                # only `stock_code` left the US dashboard rendering rows with a
+                # blank symbol and the US Telegram summary matching no holding
+                # at all. Both keys are set rather than renaming, because
+                # market-agnostic callers read `stock_code`.
+                row["ticker"] = symbol
+            portfolio.append(row)
         return True, portfolio
 
     def get_holding_quantity(self, stock_code: str, *_: Any, **__: Any) -> int | Decimal:

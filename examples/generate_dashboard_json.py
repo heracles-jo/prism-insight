@@ -14,6 +14,7 @@ load_dotenv()  # Load environment variables from .env file
 
 import sqlite3
 import json
+from decimal import Decimal
 import sys
 import yaml
 from datetime import datetime, timedelta
@@ -95,6 +96,21 @@ def _live_trading_available() -> bool:
     except Exception as exc:  # noqa: BLE001 - any failure means no live data
         logger.warning(f"Live trading data unavailable: {exc}")
         return False
+
+
+
+def _json_default(value):
+    """Serialise types json does not know, without lying about the number.
+
+    Toss reports US quantities as Decimal so that a full sell does not strand a
+    sliver (v2.21.1). json.dump refuses Decimal outright, which broke the whole
+    US dashboard write — five holdings fetched, nothing saved. float is right
+    here because this value is only ever displayed; the Decimal that matters is
+    the one the order path uses, and that never comes through JSON.
+    """
+    if isinstance(value, Decimal):
+        return float(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 class DashboardDataGenerator:
@@ -1351,7 +1367,7 @@ class DashboardDataGenerator:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             
             with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                json.dump(data, f, ensure_ascii=False, indent=2, default=_json_default)
             
             file_size = output_path.stat().st_size
             logger.info(f"JSON 파일 저장 완료: {output_path} ({file_size:,} bytes)")

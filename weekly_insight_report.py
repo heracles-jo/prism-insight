@@ -66,18 +66,16 @@ def _sell_verdict(change_pct: float) -> str:
 def _get_primary_account_key(market: str) -> str | None:
     """Account key used to scope the weekly numbers, or None to leave them unscoped.
 
-    Account keys are a KIS concept, so `kis_auth` is imported here rather than at
-    module scope: it reads `kis_devlp.yaml` on import, which a Toss-only install
-    has no reason to own. Under Toss the import fails and the report is simply
-    not scoped by account — the same outcome resolution failure already had.
+    Must be the same resolver that stamped the rows. DB migration writes
+    account_key from `primary_account_scope()`, so asking `kis_auth` here
+    instead would scope the query to a KIS account on a machine whose rows are
+    filed under its Toss one — a silently empty report rather than an error.
     """
-    default_mode = str(trading_settings().get("default_mode", "demo")).strip().lower()
-    svr = "vps" if default_mode == "demo" else "prod"
     try:
-        from trading import kis_auth as ka
+        from trading.brokers.settings import primary_account_scope
 
-        return ka.resolve_account(svr=svr, market=market)["account_key"]
-    except Exception as exc:
+        return primary_account_scope(market)[0]
+    except Exception as exc:  # noqa: BLE001 - unscoped beats no report
         logger.warning(f"Primary {market} account resolution failed: {exc}")
         return None
 

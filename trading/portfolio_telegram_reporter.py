@@ -158,11 +158,20 @@ class PortfolioTelegramReporter:
             return f"{sign}{amount:,.0f}원" if amount else "0원"
 
     def _get_primary_account_config(self, market: str) -> Optional[Dict[str, Any]]:
-        """Resolve the representative account for the active mode and market."""
-        svr = "vps" if self.trading_mode == "demo" else "prod"
+        """Resolve the representative account for the active mode and market.
+
+        Goes through the broker rather than calling `kis_auth` directly, so a
+        Toss install resolves its own account instead of raising. `name` and
+        `product` are the only fields the callers use, and on the Toss path the
+        factory ignores both — Toss binds its account through `toss_config.yaml`.
+        """
         try:
-            return ka.resolve_account(svr=svr, product="01", market=market)
-        except ValueError:
+            from trading.brokers.settings import primary_account_scope
+
+            _key, name, product, _mode = primary_account_scope(market)
+            return {"name": name, "product": product}
+        except Exception as exc:  # noqa: BLE001 - no account means no report section
+            logger.warning(f"Primary {market} account resolution failed: {exc}")
             return None
 
     def create_portfolio_message(

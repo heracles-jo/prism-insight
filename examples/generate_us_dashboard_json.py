@@ -15,6 +15,7 @@ load_dotenv()  # Load environment variables from .env
 
 import sqlite3
 import json
+from decimal import Decimal
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -84,6 +85,21 @@ from trading.brokers.settings import trading_settings
 _cfg = trading_settings()
 
 
+
+def _json_default(value):
+    """Serialise types json does not know, without lying about the number.
+
+    Toss reports US quantities as Decimal so that a full sell does not strand a
+    sliver (v2.21.1). json.dump refuses Decimal outright, which broke the whole
+    US dashboard write — five holdings fetched, nothing saved. float is right
+    here because this value is only ever displayed; the Decimal that matters is
+    the one the order path uses, and that never comes through JSON.
+    """
+    if isinstance(value, Decimal):
+        return float(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 class USDashboardDataGenerator:
     """US Stock Market Dashboard Data Generator"""
 
@@ -91,17 +107,18 @@ class USDashboardDataGenerator:
     US_SEASON1_START_DATE = "2026-01-29"
 
     def _get_primary_account_key(self) -> Optional[str]:
-        default_mode = str(_cfg.get("default_mode", "demo")).strip().lower()
-        svr = "vps" if default_mode == "demo" else "prod"
-        try:
-            # Imported here, not at module scope: kis_auth reads kis_devlp.yaml
-            # on import, and account keys are a KIS concept. Under Toss this
-            # fails and the dashboard is left unscoped by account, which is what
-            # a failed resolution already produced.
-            from trading import kis_auth as ka
+        """Account key the dashboard scopes its rows by.
 
-            return ka.resolve_account(svr=svr, market="us")["account_key"]
-        except Exception as exc:
+        Must be the same resolver that stamped those rows. DB migration writes
+        account_key from `primary_account_scope()`, so asking `kis_auth` here
+        would scope the query to a KIS account on a machine whose rows are filed
+        under its Toss one, and the dashboard would render empty.
+        """
+        try:
+            from trading.brokers.settings import primary_account_scope
+
+            return primary_account_scope("us")[0]
+        except Exception as exc:  # noqa: BLE001 - unscoped beats no dashboard
             logger.warning(f"US primary account resolution failed: {exc}")
             return None
 
@@ -1431,7 +1448,7 @@ class USDashboardDataGenerator:
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
             with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                json.dump(data, f, ensure_ascii=False, indent=2, default=_json_default)
 
             file_size = output_path.stat().st_size
             logger.info(f"JSON file saved: {output_path} ({file_size:,} bytes)")
