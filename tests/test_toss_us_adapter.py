@@ -99,8 +99,34 @@ def make_us_broker(responses=None):
     return TossBroker(client, market="US", buy_amount=1000), client
 
 
+def _live_calendar():
+    """A calendar whose regular session is open right now.
+
+    The fixed-date CALENDAR above is only safe for tests that pass an explicit
+    `now`. Order flows call `open_us_session()` with no argument, so they read
+    the wall clock — a hardcoded date makes them pass on the day they are
+    written and fail every day after.
+    """
+    import datetime as _dt
+
+    now = _dt.datetime.now(KST)
+    opens = now - _dt.timedelta(hours=1)
+    closes = now + _dt.timedelta(hours=5)
+    return {
+        "today": {
+            "date": str(now.date()),
+            "dayMarket": None,
+            "preMarket": None,
+            "regularMarket": {"startTime": opens.isoformat(), "endTime": closes.isoformat()},
+            "afterMarket": None,
+        },
+        "previousBusinessDay": {"date": str(now.date())},
+        "nextBusinessDay": {"date": str(now.date())},
+    }
+
+
 TRADING = {
-    ("GET", "/api/v1/market-calendar/US"): CALENDAR,
+    ("GET", "/api/v1/market-calendar/US"): _live_calendar(),
     ("GET", "/api/v1/prices"): PRICE_AAPL,
     ("POST", "/api/v1/orders"): {"orderId": "ord-us"},
     ("GET", "/api/v1/orders/ord-us"): us_order(),
