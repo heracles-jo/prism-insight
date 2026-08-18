@@ -24,6 +24,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Load .env before anything reads PRISM_BROKER. A fresh cron process does not
+# inherit it, and without it `selected_broker()` falls back to its default of
+# KIS — which would send a Toss install straight down the KIS inquiry path the
+# broker gate below exists to keep it off. Same reason tools/hardstop_seller.py
+# does this.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(PROJECT_ROOT / ".env")
+except Exception:
+    pass
+
 from prism_core.positions import PositionStore, account_fingerprint  # noqa: E402
 from tools.feature_status import _cron_get_all_inline_env  # noqa: E402
 
