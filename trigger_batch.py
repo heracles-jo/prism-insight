@@ -1195,6 +1195,16 @@ def trigger_macro_sector_leader(trade_date: str, snapshot: pd.DataFrame,
 
     # KR: sector_map is already available in macro_context (no external API needed)
     sector_map = macro_context.get("sector_map", {})
+    if not sector_map:
+        # Without it every ticker below fails the `if not stock_sector` check
+        # and the trigger returns empty — indistinguishable from "no stock
+        # qualified today" unless it says so here.
+        logger.error(
+            "[macro_sector_leader] sector map is empty; every candidate will be "
+            "skipped for want of a sector, so this trigger is disabled rather "
+            "than finding nothing"
+        )
+        return pd.DataFrame()
 
     common = snapshot.index.intersection(prev_snapshot.index)
     snap = snapshot.loc[common].copy()
@@ -1461,14 +1471,29 @@ def _build_topdown_pool(trigger_candidates: dict, macro_context: dict, score_col
     Returns list of (ticker, trigger_name, topdown_score, ticker_df) sorted by topdown_score desc.
     """
     if not macro_context:
+        logger.warning(
+            "[topdown] no macro context; top-down selection contributes nothing "
+            "this run and the picks are bottom-up only"
+        )
         return []
 
     leading_sectors = macro_context.get("leading_sectors", [])
     if not leading_sectors:
+        logger.warning(
+            "[topdown] macro context names no leading sectors; top-down "
+            "selection contributes nothing this run"
+        )
         return []
 
     sector_map = macro_context.get("sector_map", {})
     if not sector_map:
+        # Louder than the others on purpose. The two above can be a real
+        # reading of the market; an empty sector map is a broken input, and it
+        # went unnoticed for exactly as long as it looked like the same thing.
+        logger.error(
+            "[topdown] sector map is empty, so no candidate can be matched to a "
+            "leading sector; top-down selection is disabled, not merely idle"
+        )
         return []
 
     # Build confidence lookup: sector_name -> confidence
@@ -1648,7 +1673,11 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
         topdown_sectors = set(macro_context.get("sector_map", {}).get(t[0], "") for t in topdown_pool)
         logger.info(f"Top-down pool: {len(topdown_pool)} candidates from sectors {topdown_sectors}")
     else:
-        logger.info("Top-down pool: empty (pure bottom-up mode)")
+        # Deliberately does not call this a mode. It reads as a design choice,
+        # which is how a dead top-down half survived unnoticed; the reason was
+        # logged by _build_topdown_pool just above, at a level that matches
+        # whether it is a market outcome or a broken input.
+        logger.info("Top-down pool: empty; selecting bottom-up only this run")
 
     # Phase 1: Fill top-down slots
     topdown_filled = 0

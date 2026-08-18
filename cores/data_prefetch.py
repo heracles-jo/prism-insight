@@ -633,9 +633,26 @@ def prefetch_kr_analysis_data(company_code: str, reference_date: str, max_years_
     if kosdaq_index:
         result["kosdaq_index"] = kosdaq_index
 
-    if result:
-        logger.info(f"Prefetched KR data for {company_code}: {list(result.keys())}")
+    # Naming what is missing, not just what arrived. Listing the successes
+    # reads as a complete run whatever the length of the list, which is how a
+    # report with no investor flows looked identical to a healthy one. Each
+    # missing piece sends its agent back to the MCP tool, so this is a warning
+    # rather than a failure — but a silent one costs the section when that
+    # falls over too.
+    expected = ("stock_ohlcv", "trading_volume", "kospi_index", "kosdaq_index")
+    missing = [key for key in expected if key not in result]
+
+    if not result:
+        logger.warning(
+            f"Prefetched no KR data for {company_code}; all {len(expected)} inputs "
+            f"missing ({', '.join(expected)}). Agents fall back to MCP tools."
+        )
+    elif missing:
+        logger.warning(
+            f"Prefetched KR data for {company_code} is incomplete: "
+            f"missing {', '.join(missing)}. Those agents fall back to MCP tools."
+        )
     else:
-        logger.warning(f"Failed to prefetch any KR data for {company_code}")
+        logger.info(f"Prefetched KR data for {company_code}: {list(result.keys())}")
 
     return result
