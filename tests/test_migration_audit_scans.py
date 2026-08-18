@@ -219,12 +219,23 @@ KNOWN_KEYWORD_INSTRUMENT = {
 
 def test_order_calls_pass_the_instrument_positionally():
     hits = set()
-    for path, lineno, _text in _git_grep(r"execute_(buy|sell|pre_reserved_(buy|sell))\("):
+    for path, lineno, text in _git_grep(r"execute_(buy|sell|pre_reserved_(buy|sell))\("):
         source = (REPO_ROOT / path).read_text(encoding="utf-8").splitlines()
-        # The instrument is the first argument, so it is on the next line in
-        # this codebase's multi-line call style.
-        following = source[lineno] if lineno < len(source) else ""
-        if re.match(r"\s*(ticker|stock_code|symbol)\s*=", following):
+        # The instrument is the first argument, so in this codebase's multi-line
+        # call style it lands on the next line — but a single-line call carries
+        # it on the matched line itself, and that is the same regression class
+        # (`ticker=` reaching `async_sell_stock(stock_code, ...)`), so both are
+        # checked. Blank and comment lines are skipped rather than ending the
+        # scan, so a comment before the first argument cannot hide it either.
+        candidates = [re.sub(r".*execute_\w+\(", "", text)]
+        for offset in range(lineno, min(lineno + 3, len(source))):
+            line = source[offset]
+            if line.strip() and not line.strip().startswith("#"):
+                candidates.append(line)
+                break
+        if any(
+            re.match(r"\s*(ticker|stock_code|symbol)\s*=", c) for c in candidates
+        ):
             hits.add(Path(path).name)
 
     _assert_frozen(hits, KNOWN_KEYWORD_INSTRUMENT, set(),

@@ -2793,6 +2793,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             # because the order had to be queued). Their remaining DB rows were
             # already removed, so skip them when the loop reaches them.
             fully_exited_tickers: set = set()
+            # Toss's session answer comes from a live calendar request, so asking
+            # per holding meant a rate-limited or 5xx endpoint skipped every exit
+            # in the pass, stop-losses included. The session cannot change
+            # meaningfully within one pass, so ask once. None = not yet asked.
+            pass_session_open: Optional[bool] = None
+            skipped_no_session: List[str] = []
 
             for stock in holdings:
                 ticker = stock.get('ticker')
@@ -2912,7 +2918,11 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             async with ExecutionService.us(
                                 account_name=stock.get("account_name")
                             ) as _gate:
-                                _sellable = await asyncio.to_thread(_gate.is_market_open)
+                                if pass_session_open is None:
+                                    pass_session_open = await asyncio.to_thread(
+                                        _gate.is_market_open
+                                    )
+                                _sellable = pass_session_open
                                 if _sellable:
                                     # An open session is not enough for a holding
                                     # under one share. Toss takes fractional
@@ -2953,6 +2963,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 f"{ticker} no Toss US session open — skipping sell "
                                 f"(position kept, rows untouched)"
                             )
+                            skipped_no_session.append(f"{company_name}({ticker})")
                             continue
 
                     # Delete from holding_decisions when selling
@@ -3204,6 +3215,17 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     )
                     self.conn.commit()
                     logger.info(f"{ticker} ({company_name}) price updated: ${current_price:.2f} ({sell_reason})")
+
+            if skipped_no_session:
+                # One loud line, not just the per-ticker errors: an exit decided
+                # here — a stop-loss included — did not happen, and the next US
+                # pass is up to ~12h away.
+                logger.error(
+                    "[SELL_BLOCKED] no Toss US session — %d position(s) were not "
+                    "even attempted: %s. The next pass is the earliest retry.",
+                    len(skipped_no_session),
+                    ", ".join(skipped_no_session),
+                )
 
             return sold_stocks
 

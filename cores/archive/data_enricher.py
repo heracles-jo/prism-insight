@@ -192,6 +192,7 @@ class KRDataEnricher:
         # once per enricher rather than once per ticker — this class runs five
         # fetches concurrently.
         self._checked_broker = False
+        self._broker_is_kis = False
 
     def _get_trading(self):
         """Lazy-init DomesticStockTrading in demo mode.
@@ -202,19 +203,26 @@ class KRDataEnricher:
         swallowed as a generic init failure, which is what a Toss install used
         to see.
         """
-        if self._trading is None and not self._checked_broker:
-            self._checked_broker = True
-            try:
-                from trading.brokers.settings import selected_broker, KIS
+        if self._trading is None:
+            # The broker answer cannot change mid-run, so it is asked (and said)
+            # once. The init below stays outside this guard on purpose: it can
+            # fail transiently on KIS auth or network, and latching that would
+            # disable enrichment for the rest of this enricher's life.
+            if not self._checked_broker:
+                self._checked_broker = True
+                try:
+                    from trading.brokers.settings import selected_broker, KIS
 
-                broker = selected_broker()
-            except Exception as e:  # noqa: BLE001 - an unreadable broker is not KIS
-                logger.warning(f"브로커 설정 확인 실패({e}) — KR 아카이브 보강 비활성")
-                return None
-            if broker != KIS:
-                logger.warning(
-                    f"KR 아카이브 보강은 KIS 전용입니다 — broker={broker}에서는 건너뜁니다"
-                )
+                    self._broker_is_kis = selected_broker() == KIS
+                    if not self._broker_is_kis:
+                        logger.warning(
+                            "KR 아카이브 보강은 KIS 전용입니다 — "
+                            f"broker={selected_broker()}에서는 건너뜁니다"
+                        )
+                except Exception as e:  # noqa: BLE001 - an unreadable broker is not KIS
+                    self._broker_is_kis = False
+                    logger.warning(f"브로커 설정 확인 실패({e}) — KR 아카이브 보강 비활성")
+            if not self._broker_is_kis:
                 return None
             try:
                 from trading.domestic_stock_trading import DomesticStockTrading  # type: ignore[import]

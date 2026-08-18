@@ -3144,6 +3144,12 @@ class StockTrackingAgent:
             # broker quantity ONCE (first sell of that ticker this pass) and
             # distribute from the snapshot using an in-pass accumulator —
             # independent of fill timing.
+            # Sells this pass declined to attempt because the KR market is shut.
+            # Collected so the operator gets one visible line instead of only
+            # per-ticker errors: under Toss the 15:40 afternoon batch reaches
+            # this loop past 15:30, so an exit decided there cannot be placed at
+            # all — the schedule, not the code, is what has to change.
+            skipped_closed_market: List[str] = []
             pass_total_qty: Dict[str, int] = {}   # ticker -> snapshot total qty
             pass_sold_qty: Dict[str, int] = {}    # ticker -> cumulative ordered qty
             blocked_tickers: set[str] = set()
@@ -3261,6 +3267,7 @@ class StockTrackingAgent:
                                 f"{ticker} KR market is not in its regular window — "
                                 f"skipping sell (position kept, row untouched)"
                             )
+                            skipped_closed_market.append(f"{company_name}({ticker})")
                             continue
 
                     # Process sell (deletes only this row when N>1, else the ticker)
@@ -3447,6 +3454,19 @@ class StockTrackingAgent:
                     )
                     self.conn.commit()
                     logger.info(f"{ticker}({company_name}) current price updated: {current_price:,.0f} KRW ({sell_reason})")
+
+            if skipped_closed_market:
+                # One loud line, not just the per-ticker errors above: this is a
+                # schedule problem the operator has to act on, and a stop-loss
+                # decided here simply did not happen.
+                logger.error(
+                    "[SELL_BLOCKED] KR 장 마감으로 %d개 종목의 매도를 시도조차 하지 못했습니다: %s "
+                    "— 토스는 정규장(09:00–15:30) 밖 주문을 체결할 수 없으므로, "
+                    "트래킹 에이전트가 정규장 안에 돌도록 크론을 조정해야 합니다 "
+                    "(현재 오후 배치는 15:40 시작).",
+                    len(skipped_closed_market),
+                    ", ".join(skipped_closed_market),
+                )
 
             return sold_stocks
 
