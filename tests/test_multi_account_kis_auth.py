@@ -2,6 +2,7 @@ import atexit
 import sys
 import textwrap
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -49,6 +50,15 @@ if not CONFIG_FILE.exists():
 
 if _CREATED_TEST_CONFIG:
     atexit.register(lambda: CONFIG_FILE.unlink(missing_ok=True))
+
+# Insist on the real module. Other test files stub `trading.kis_auth` with a
+# MagicMock at import time (it reads YAML at module scope, which they have no
+# config for) and never take it back out, so whether this file gets the genuine
+# module used to depend on some unrelated module happening to import it first.
+# These tests are about kis_auth's own logic, so a mock makes every assertion
+# vacuously pass against a MagicMock instead of failing loudly.
+if isinstance(sys.modules.get("trading.kis_auth"), mock.MagicMock):
+    del sys.modules["trading.kis_auth"]
 
 from trading import kis_auth as ka
 

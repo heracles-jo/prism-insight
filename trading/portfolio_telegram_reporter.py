@@ -30,20 +30,26 @@ sys.path.insert(0, str(TRADING_DIR))              # trading/ for local imports
 sys.path.insert(0, str(PARENT_DIR))               # project root - MUST be first for 'from trading.xxx'
 
 # Load configuration file
-CONFIG_FILE = TRADING_DIR / "config" / "kis_devlp.yaml"
-with open(CONFIG_FILE, encoding="UTF-8") as f:
-    _cfg = yaml.safe_load(f)
+# Trading settings come from whichever broker is configured, so this module no
+# longer requires kis_devlp.yaml to exist. Reading it here made the Telegram
+# report unimportable on a Toss-only install.
+from trading.brokers.settings import trading_settings
+
+_cfg = trading_settings()
 
 # Import local modules
-from trading.domestic_stock_trading import DomesticStockTrading
-from trading import kis_auth as ka
+# KIS trading modules are imported inside the methods that need them; both
+# read kis_devlp.yaml at import time.
 from telegram_bot_agent import TelegramBotAgent
 
 # Import US trading module (optional - may not be available)
 try:
     from us_stock_trading import USStockTrading
     US_TRADING_AVAILABLE = True
-except ImportError:
+except (ImportError, FileNotFoundError):
+    # FileNotFoundError as well as ImportError: us_stock_trading imports
+    # kis_auth, which reads kis_devlp.yaml at module scope, so a Toss-only
+    # install fails here with a missing file rather than a missing module.
     US_TRADING_AVAILABLE = False
 
 # Logging configuration

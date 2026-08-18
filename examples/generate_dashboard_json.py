@@ -82,7 +82,10 @@ except FileNotFoundError:
 try:
     from trading.domestic_stock_trading import DomesticStockTrading
     KIS_AVAILABLE = True
-except ImportError:
+except (ImportError, FileNotFoundError):
+    # FileNotFoundError, not just ImportError: kis_auth reads kis_devlp.yaml at
+    # module scope, so a Toss-only install fails here with a missing file
+    # rather than a missing module. The guard has to catch both.
     KIS_AVAILABLE = False
     logger.warning("Korea Investment & Securities API module not found. Cannot fetch live trading data.")
 

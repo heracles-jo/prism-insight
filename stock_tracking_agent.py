@@ -101,7 +101,22 @@ from tracking import (
     CompressionManager,
     TelegramSender,
 )
-from trading import kis_auth as ka
+# `kis_auth` is imported lazily at its use sites, not here. It reads
+# kis_devlp.yaml at module scope, so importing it up here makes this module —
+# the main trading loop — unstartable on a Toss-only install that has no KIS
+# config. See `_kis_auth()` below.
+
+
+def _kis_auth():
+    """KIS auth helpers, loaded on demand.
+
+    Only the KIS account-naming paths need these. Deferring the import keeps
+    the module importable without kis_devlp.yaml.
+    """
+    from trading import kis_auth as ka
+
+    return ka
+
 
 # Create MCPApp instance
 app = MCPApp(name="stock_tracking")
@@ -470,9 +485,9 @@ class StockTrackingAgent:
             return False
 
     def _get_trading_accounts(self) -> List[Dict[str, Any]]:
-        default_mode = str(ka.getEnv().get("default_mode", "demo")).strip().lower()
+        default_mode = str(_kis_auth().getEnv().get("default_mode", "demo")).strip().lower()
         svr = "vps" if default_mode == "demo" else "prod"
-        return ka.get_configured_accounts(svr=svr, market="kr")
+        return _kis_auth().get_configured_accounts(svr=svr, market="kr")
 
     def _set_active_account(self, account: Dict[str, Any]) -> None:
         self.active_account = account
@@ -497,9 +512,9 @@ class StockTrackingAgent:
         parts = account_key.split(":")
         if len(parts) == 3:
             scope, account_number, product = parts
-            return f"{account_name} ({scope}:{ka.mask_account_number(account_number)}:{product})"
+            return f"{account_name} ({scope}:{_kis_auth().mask_account_number(account_number)}:{product})"
 
-        return f"{account_name} ({ka.mask_account_number(account_key)})"
+        return f"{account_name} ({_kis_auth().mask_account_number(account_key)})"
 
     async def _extract_ticker_info(self, report_path: str) -> Tuple[str, str]:
         """Extract ticker code and company name (delegates to tracking.helpers)"""
