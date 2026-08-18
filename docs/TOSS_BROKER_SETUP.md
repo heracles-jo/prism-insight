@@ -279,6 +279,7 @@ PRISM_MARKET_DATA_SOURCES=toss,krx,fdr
 
 - **분할 매도 불가** — 소수 포지션은 항상 전량 매도입니다. 피라미딩 분할 계산이 정수 나눗셈이라 `0.44 // 2 = 0`이 됩니다.
 - **추적 DB와의 정합성 미해결** — `us_stock_holdings`는 행별 수량을 저장하지 않고 "1행 ≈ 1주"를 전제합니다(`prism-us/tracking/db_schema.py:1006`). 소수 포지션이나 위의 부분 매도가 이 모델과 어긋날 수 있습니다. **브로커 잔고를 단일 진실로 보시고**, 부분 매도 후에는 `residual_quantity`를 확인하십시오.
+  결정이 필요한 항목과 배경 → [#5](https://github.com/heracles-jo/prism-insight/issues/5)
 
 ## 참고
 
