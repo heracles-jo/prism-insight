@@ -26,7 +26,14 @@ client_secret: "s_발급받은_클라이언트_시크릿"
 
 # 주문·잔고 조회에 사용할 계좌 일련번호 (X-Tossinvest-Account 헤더 값).
 # GET /api/v1/accounts 로 조회할 수 있습니다.
+#
+# DB 의 account_key 도 이 값에서 만들어집니다 (vps|prod:<account_seq>:01).
+# 이미 거래 기록이 쌓인 뒤에 이 값을 바꾸면 기존 행과 스코프가 어긋납니다.
 account_seq: "계좌_일련번호"
+
+# 로그와 리포트에 표시할 계좌 이름. 생략하면 "toss-primary" 입니다.
+# 계좌번호가 아니라 사람이 읽는 이름이므로 마스킹되지 않습니다.
+# account_name: "토스-메인"
 
 # API 서버 주소 (수정하지 마세요)
 base_url: "https://openapi.tossinvest.com"
