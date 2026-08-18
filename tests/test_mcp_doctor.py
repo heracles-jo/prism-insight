@@ -8,6 +8,7 @@ URL, an npm package spec, and a correctly-resolved sqlite path as missing.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,8 @@ import pytest
 from tools.mcp_doctor import (
     _base_dir,
     _check_env,
+    _check_launch,
+    _launch_module,
     _load_repo_env,
     _looks_like_path,
 )
@@ -172,3 +175,85 @@ class TestDotenvLoading:
 
         assert set(result) == {"path", "loaded"}
         assert "super-secret-value" not in repr(result)
+
+
+class TestLaunchCheck:
+    """`shutil.which` answers the wrong question.
+
+    A host whose system interpreter is 3.9 has a `python3` on PATH and no
+    `mcp` in it. The command was found, the server died at launch, and the only
+    symptom downstream was a report section that came out empty — which is how
+    this went unnoticed until somebody deployed to a new machine.
+    """
+
+    @pytest.mark.parametrize(
+        ("command", "args", "expected"),
+        [
+            ("python3", ["-m", "cores.market_data.mcp_server"], "cores.market_data.mcp_server"),
+            ("/usr/bin/python3.11", ["-m", "pkg.mod"], "pkg.mod"),
+            ("/some/venv/bin/python", ["-m", "pkg.mod"], "pkg.mod"),
+            # Not ours to check: whoever packaged these owns their dependencies.
+            ("npx", ["-y", "firecrawl-mcp@3.23.6"], None),
+            ("uv", ["--directory", "sqlite", "run", "mcp-server-sqlite"], None),
+            # A python invoked without -m runs a script, not a module.
+            ("python3", ["script.py"], None),
+            # Malformed: `-m` with nothing after it.
+            ("python3", ["-m"], None),
+        ],
+    )
+    def test_only_python_module_servers_are_checked(self, command, args, expected):
+        assert _launch_module(command, args) == expected
+
+    def test_an_interpreter_that_cannot_import_the_module_is_reported(self, tmp_path):
+        """The reported failure, reproduced: the command exists, the import does not."""
+        result = _check_launch(
+            sys.executable, ["-m", "a_module_that_does_not_exist"], {}, tmp_path
+        )
+
+        assert result is not None
+        assert result["importable"] is False
+        assert "ModuleNotFoundError" in result["detail"]
+
+    def test_an_interpreter_that_can_import_it_passes(self, tmp_path):
+        result = _check_launch(sys.executable, ["-m", "json"], {}, tmp_path)
+
+        assert result == {"module": "json", "importable": True, "detail": ""}
+
+    def test_a_server_this_does_not_apply_to_returns_none(self, tmp_path):
+        """None, not a pass — a server never checked must not look checked."""
+        assert _check_launch("npx", ["-y", "some-mcp@1.0.0"], {}, tmp_path) is None
+
+    def test_the_declared_environment_reaches_the_subprocess(self, tmp_path):
+        """PYTHONPATH is declared per server, and without it the import fails.
+
+        Checking with the ambient environment instead would pass here and fail
+        at launch — the same gap in a new place.
+        """
+        package = tmp_path / "prism_probe_pkg"
+        package.mkdir()
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        # A real directory that is not the one holding the package, so the only
+        # way in is the declared PYTHONPATH.
+        (tmp_path / "elsewhere").mkdir()
+
+        without = _check_launch(
+            sys.executable, ["-m", "prism_probe_pkg"], {}, tmp_path / "elsewhere"
+        )
+        with_path = _check_launch(
+            sys.executable,
+            ["-m", "prism_probe_pkg"],
+            {"PYTHONPATH": str(tmp_path)},
+            tmp_path / "elsewhere",
+        )
+
+        assert without["importable"] is False
+        assert with_path["importable"] is True
+
+    def test_a_failure_detail_carries_no_traceback(self, tmp_path):
+        """A traceback quotes paths, which differ per host and defeat diffing."""
+        result = _check_launch(
+            sys.executable, ["-m", "a_module_that_does_not_exist"], {}, tmp_path
+        )
+
+        assert "Traceback" not in result["detail"]
+        assert len(result["detail"].splitlines()) == 1

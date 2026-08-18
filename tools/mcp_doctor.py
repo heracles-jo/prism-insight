@@ -29,6 +29,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -84,6 +85,7 @@ MISSING_COMMAND = "MISSING_COMMAND"
 MISSING_PATH = "MISSING_PATH"
 UNSET_ENV = "UNSET_ENV"
 ABSOLUTE_PATH = "ABSOLUTE_PATH"
+CANNOT_IMPORT = "CANNOT_IMPORT"
 
 
 @dataclass
@@ -94,10 +96,73 @@ class ServerReport:
     problems: list[str] = field(default_factory=list)
     paths: list[dict] = field(default_factory=list)
     env: list[dict] = field(default_factory=list)
+    launch: dict | None = None
 
     @property
     def healthy(self) -> bool:
         return not self.problems
+
+
+_PYTHON_COMMAND = re.compile(r"(^|/)(python|python3|python3\.\d+)$")
+
+
+def _launch_module(command: str, args) -> str | None:
+    """The module a `python -m MODULE` server would run, if that is what it is.
+
+    Servers launched by npx or uv are somebody else's dependency problem; only
+    the ones this repo starts with an interpreter are checked.
+    """
+    if not _PYTHON_COMMAND.search(command or ""):
+        return None
+    args = list(args or [])
+    if "-m" not in args:
+        return None
+    index = args.index("-m")
+    return args[index + 1] if index + 1 < len(args) else None
+
+
+def _check_launch(command: str, args, spec_env: dict, project_root: Path) -> dict | None:
+    """Can this interpreter actually import the module it is told to run?
+
+    `shutil.which` answers whether a `python3` exists, which is not the
+    question. The reported failure was a host whose system interpreter is 3.9
+    and has neither `mcp` nor the repo's dependencies: the command was found,
+    the server died at launch, and the only symptom downstream was an empty
+    report section.
+
+    Importing the module is exactly what `python -m` does first, so this checks
+    the real thing rather than a proxy for it. It runs with the server's own
+    declared environment — PYTHONPATH included — because that is what the
+    server will be given.
+
+    Returns None when there is nothing to check, so a server this does not
+    apply to is not reported as passing something it never took.
+    """
+    module = _launch_module(command, args)
+    if module is None:
+        return None
+
+    env = {**os.environ, **{k: str(v) for k, v in (spec_env or {}).items()}}
+    try:
+        result = subprocess.run(
+            [command, "-c", f"import {module}"],
+            capture_output=True, text=True, timeout=30,
+            cwd=str(project_root), env=env,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"module": module, "importable": False, "detail": type(exc).__name__}
+
+    if result.returncode == 0:
+        return {"module": module, "importable": True, "detail": ""}
+
+    # The last line is the exception; the traceback above it is noise here, and
+    # a full traceback could carry a path that differs between hosts.
+    lines = [line for line in (result.stderr or "").splitlines() if line.strip()]
+    return {
+        "module": module,
+        "importable": False,
+        "detail": lines[-1][:120] if lines else f"exit {result.returncode}",
+    }
 
 
 def _check_env(spec_env: dict, raw_env: dict | None = None) -> list[dict]:
@@ -243,6 +308,14 @@ def inspect(registry, project_root: Path, raw_servers: dict | None = None) -> li
         )
         if not command_found:
             report.problems.append(MISSING_COMMAND)
+        else:
+            # Only worth asking once the command exists; otherwise the failure
+            # is already named and running it would just say so again.
+            report.launch = _check_launch(
+                spec.command, spec.args, dict(spec.env or {}), project_root
+            )
+            if report.launch and not report.launch["importable"]:
+                report.problems.append(CANNOT_IMPORT)
         for path in report.paths:
             if not path["exists"]:
                 report.problems.append(MISSING_PATH)
@@ -310,6 +383,7 @@ def main(argv: list[str] | None = None) -> int:
                     "command_found": r.command_found,
                     "paths": r.paths,
                     "env": r.env,
+                    "launch": r.launch,
                     "problems": sorted(set(r.problems)),
                 }
                 for r in reports
@@ -355,6 +429,14 @@ def main(argv: list[str] | None = None) -> int:
             for entry in server["env"]:
                 state = "set" if entry["set"] else "UNSET"
                 print(f"        env {entry['key']} <- {entry['source']} [{state}]")
+            launch = server.get("launch")
+            if launch:
+                if launch["importable"]:
+                    print(f"        import {launch['module']}: ok")
+                else:
+                    print(
+                        f"        import {launch['module']}: FAILED — {launch['detail']}"
+                    )
             if server["problems"]:
                 print(f"        problems: {', '.join(sorted(set(server['problems'])))}")
 
