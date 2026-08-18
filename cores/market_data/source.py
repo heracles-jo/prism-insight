@@ -101,6 +101,17 @@ class SourceChain:
         # produces hundreds. Reported once at WARNING, then demoted — the state
         # is still stated, just not restated.
         self._announced: set[tuple[str, str, str]] = set()
+        # Acting on the observation above rather than only quieting it. A source
+        # whose credentials are refused (KRX login is blocked on the production
+        # host) failed on *every* lookup, so each one paid a full round-trip
+        # before the chain moved on — a morning batch spends that hundreds of
+        # times. After enough consecutive failures the source is stood down for
+        # the rest of the process; a fresh batch gives it another chance.
+        self._consecutive_failures: dict[str, int] = {}
+
+    # Three, not one: a single timeout or 502 should not cost the primary its
+    # place for a whole batch. A dead source reaches three almost immediately.
+    RETIRE_AFTER_CONSECUTIVE_FAILURES = 3
 
     def _announce(self, kind: str, source_name: str, capability: str, message: str, *args) -> None:
         """WARNING the first time this exact situation occurs, DEBUG after.
@@ -116,6 +127,21 @@ class SourceChain:
         self._announced.add(key)
         logger.warning(message, *args)
 
+    def _record_failure(self, source_name: str) -> None:
+        """Count a failure, and say so once when it retires the source.
+
+        `Unsupported` deliberately does not come through here: it is a settled
+        answer about one capability, not a sign the source is unwell.
+        """
+        count = self._consecutive_failures.get(source_name, 0) + 1
+        self._consecutive_failures[source_name] = count
+        if count == self.RETIRE_AFTER_CONSECUTIVE_FAILURES:
+            logger.warning(
+                "[SOURCE_DOWN] %s failed %d times in a row; standing it down for "
+                "the rest of this run. Later sources answer from here on.",
+                source_name, count,
+            )
+
     @property
     def names(self) -> list[str]:
         return [s.name for s in self._sources]
@@ -129,6 +155,10 @@ class SourceChain:
         """
         attempts: list[str] = []
         for source in self._sources:
+            failures = self._consecutive_failures.get(source.name, 0)
+            if failures >= self.RETIRE_AFTER_CONSECUTIVE_FAILURES:
+                attempts.append(f"{source.name}: stood down after {failures} failures")
+                continue
             method = getattr(source, capability, None)
             if method is None:
                 attempts.append(f"{source.name}: no such capability")
@@ -144,6 +174,7 @@ class SourceChain:
                     "unavailable", source.name, capability,
                     "%s unavailable for %s; trying next source", source.name, capability,
                 )
+                self._record_failure(source.name)
                 continue
             except Exception as exc:  # noqa: BLE001 - a broken source must not stop the chain
                 attempts.append(f"{source.name}: {type(exc).__name__}: {exc}")
@@ -152,7 +183,11 @@ class SourceChain:
                     "%s raised on %s (%s); trying next source",
                     source.name, capability, exc,
                 )
+                self._record_failure(source.name)
                 continue
+
+            # Answered, so whatever was wrong is over.
+            self._consecutive_failures.pop(source.name, None)
 
             if source is not self._sources[0]:
                 # The call succeeded. Warning on it reported a working system as
