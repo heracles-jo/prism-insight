@@ -20,7 +20,7 @@
 
 | 주장 | 확인 |
 |---|---|
-| 새 변수 4종이 안내되지 않음 | `.env.example` 에 **5/5 전부 없음** (`PRISM_REPORT_DATA_SOURCES` 포함) |
+| 새 변수 4종이 안내되지 않음 | `.env.example` 에 **6/6 전부 없음**. 보고된 4종 + `PRISM_REPORT_DATA_SOURCES` + `PRISM_MCP_WORKDIR`(구현 중 테스트가 발견) |
 | 이 호스트의 `python3` 가 `mcp` 를 못 가짐 | `/usr/bin/python3` = **3.9.6**, `import mcp` → `ModuleNotFoundError` |
 | `mcp_doctor` 가 `.env` 를 안 읽음 | 파일에 `load_dotenv` **없음**. `os.environ` 만 본다 |
 | 종목명이 코드로 강등됨 | **재현 안 됨** — 아래 참조 |
@@ -70,7 +70,7 @@ We'll know we're right when **`.env.example` 만 보고 설정한 새 호스트�
 
 | Metric | Target | How Measured |
 |--------|--------|--------------|
-| 설정 안내 | 새 변수 **5/5** 가 `.env.example` 에 이유와 함께 | grep |
+| 설정 안내 | 새 변수 **6/6** 가 `.env.example` 에 이유와 함께 | grep |
 | 진단 일치 | `mcp_doctor` 결과가 런타임 해석과 **동일** | `.env` 로드 전후 비교 |
 | 인터프리터 검증 | `mcp` 없는 인터프리터를 **FAIL 로 잡음** | `/usr/bin/python3` 지정 후 실행 |
 | 로그 소음 | 체인이 성공한 호출에서 WARNING **0건** | 기본 체인 종목명 조회 |
@@ -161,7 +161,7 @@ When **패치를 반영하고 새 호스트에서 처음 돌릴 때**, I want to
 
 | # | Phase | Description | Status | Parallel | Depends | PRP Plan |
 |---|-------|-------------|--------|----------|---------|----------|
-| 1 | 설정 안내 | `.env.example` + 문서에 새 변수 5종과 이유 | in-progress | with 2 | - | [plan](../plans/mcp-env-setup-guidance.plan.md) |
+| 1 | 설정 안내 | `.env.example` + 문서에 새 변수 **6종**과 이유 | complete | with 2 | - | [plan](../plans/completed/mcp-env-setup-guidance.plan.md) |
 | 2 | 진단이 런타임과 같은 것을 보게 | `mcp_doctor` 가 `.env` 로드 | pending | with 1 | - | - |
 | 3 | 인터프리터 검증 | 명령 존재가 아니라 서버 기동 가능 여부 | pending | - | 2 | - |
 | 4 | 복구된 실패의 로그 레벨 | 체인 FALLBACK, 그리고 상시 실패를 알아채는 법 | pending | - | - | - |

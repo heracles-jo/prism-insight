@@ -197,7 +197,36 @@ mcp:
 ```
 
 > **참고**: 현재 한국 시장 MCP는 저장소 내부 market-data 소스 체인을 사용합니다.
-> 운영 환경에서는 오케스트레이터와 같은 Python을 `PRISM_MCP_PYTHON`으로 지정하십시오.
+> KRX 로그인이 필요 없으며, 시세·수급·업종분류를 자격증명 없이 제공합니다.
+
+#### MCP 설정 파일이 둘인 이유
+
+같은 서버 이름을 쓰는 설정 파일이 두 개이고, 서로 다른 경로가 읽습니다.
+
+| 파일 | 읽는 쪽 | 환경변수 치환 |
+|---|---|---|
+| `cores/llm/mcp_servers.yaml` | 리포트 생성 | **지원** (`${VAR}` / `${VAR:-기본값}`) |
+| `mcp_agent.config.yaml` | 분석 에이전트 (mcp-agent 프레임워크) | **미지원** |
+
+리포트 경로는 값을 `.env`에서 읽으므로 보통 `cores/llm/mcp_servers.yaml`을 직접
+편집할 일이 없습니다. 대신 `.env`에 다음을 채우십시오 — 항목별 설명은
+`.env.example`의 "MCP 서버 레지스트리" 구역에 있습니다.
+
+```bash
+PRISM_MCP_PYTHON=/path/to/prism-insight/.venv/bin/python
+PRISM_REPO_ROOT=/path/to/prism-insight
+FIRECRAWL_API_KEY=...
+PERPLEXITY_API_KEY=...
+```
+
+> ⚠️ **`PRISM_MCP_PYTHON`을 반드시 지정하십시오.** 이 서버들은 저장소 코드를
+> import하므로 저장소 의존성이 설치된 인터프리터여야 합니다. 미설정 시 맨
+> `python3`로 떨어지는데, 시스템 `python3`가 3.9라 `mcp` 패키지조차 없는 호스트가
+> 흔합니다. 그 경우 `kospi_kosdaq`·`time` 서버가 **오류 없이 뜨지 못하고**, 증상은
+> 리포트에서 해당 섹션이 조용히 비는 것뿐입니다.
+
+`mcp_agent.config.yaml`은 `${VAR}` 치환을 지원하지 않으므로 위 환경변수가 듣지
+않습니다. 그쪽 인터프리터를 바꾸려면 `command` 값을 파일에 직접 적으십시오.
 
 ### 6단계: Playwright 설치 (PDF 생성용)
 
