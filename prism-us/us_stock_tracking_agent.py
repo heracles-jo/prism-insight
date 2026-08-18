@@ -240,15 +240,6 @@ def _mask_account_number(account_number: str | None) -> str:
     return f"{account_str[:2]}{'*' * (len(account_str) - 4)}{account_str[-2:]}"
 
 
-class _SkipOrderForRow(Exception):
-    """This row has nothing to send to the broker; skip the order, keep going.
-
-    Raised where the sell quantity resolves to zero. Distinct from a failure:
-    the caller has already logged what needs reconciling and must not treat it
-    as an error worth retrying.
-    """
-
-
 def _load_root_broker_settings():
     """Root `trading.brokers.settings`, loaded by path like kis_auth above.
 
@@ -3018,6 +3009,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     # FIX 2: fractional -> distribute from a per-pass snapshot
                                     # (snapshot - already_ordered) so unfilled orders cannot over-sell.
                                     sell_quantity = None
+                                    # Set when the split leaves this row nothing to
+                                    # sell. A flag rather than an exception: raising
+                                    # out of the trading context makes __aexit__ log
+                                    # a deliberate skip as a broker error, and the KR
+                                    # path signals the same situation the same way.
+                                    _skip_order = False
                                     # The FINAL row of a ticker already split THIS pass
                                     # (plan flips to "single_full" at remaining_rows==1) must also
                                     # sell from the snapshot remainder, NOT re-query the broker —
@@ -3045,7 +3042,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                                 f"no order sent — RECONCILE: the holdings row is "
                                                 f"already deleted while the dust remains at the broker"
                                             )
-                                            raise _SkipOrderForRow(ticker)
+                                            _skip_order = True
                                         pass_sold_qty[ticker] += sell_quantity
                                         logger.info(
                                             f"{ticker} pyramiding fractional sell: {sell_quantity} shares "
@@ -3077,12 +3074,23 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     # US order died on TypeError, after this row was
                                     # already deleted). Only the FIRST argument is
                                     # positional — KIS US takes `exchange` second.
-                                    trade_result = await trading.execute_sell(
-                                        ticker,
-                                        limit_price=current_price,
-                                        quantity=sell_quantity,
-                                        intent=order_intent,
-                                    )
+                                    if _skip_order:
+                                        # Nothing to send; the reason was already
+                                        # logged with what needs reconciling.
+                                        # OrderIntent.create above is a pure
+                                        # constructor, so no idempotency key was
+                                        # reserved for an order that never went out.
+                                        trade_result = {
+                                            'success': False,
+                                            'message': 'no order sent (split left 0 shares for this row)',
+                                        }
+                                    else:
+                                        trade_result = await trading.execute_sell(
+                                            ticker,
+                                            limit_price=current_price,
+                                            quantity=sell_quantity,
+                                            intent=order_intent,
+                                        )
 
                                 persisted_intent_id = trade_result.get("intent_id")
                                 if persisted_intent_id:
@@ -3107,8 +3115,6 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     # under-selling beats double-selling.
                                     if sell_quantity is not None and ticker in pass_sold_qty:
                                         pass_sold_qty[ticker] -= sell_quantity
-                            except _SkipOrderForRow:
-                                pass  # already logged, and nothing was accumulated
                             except OrderOutcomeUnknown as trade_err:
                                 self._link_position_exit_intent(
                                     legacy_holding_id=closed_legacy_ids[0],
