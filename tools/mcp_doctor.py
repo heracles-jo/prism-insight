@@ -43,6 +43,32 @@ from cores.llm.config_loader import (  # noqa: E402
     load_report_mcp_registry,
 )
 
+def _load_repo_env(project_root: Path) -> dict:
+    """Read the repo `.env`, the way every runtime entry point does.
+
+    Without this the diagnostic reads a different environment than the thing it
+    is diagnosing: `cores/analysis.py` and the MCP servers call `load_dotenv()`
+    at start-up, so a key that lives only in `.env` is present for them and
+    absent here. The tool then reports a working server as UNSET_ENV — the
+    false positive its own docstring calls indistinguishable from a real
+    breakage, and the reason two hosts' outputs could not be compared.
+
+    `load_dotenv` does not override an already-exported variable, so a shell
+    that set one explicitly still wins, exactly as it does at runtime.
+
+    Returns where it looked and whether it found anything — never what it read.
+    Two hosts disagreeing is only informative if you know which file each used.
+    """
+    env_path = project_root / ".env"
+    if not env_path.exists():
+        return {"path": str(env_path), "loaded": False}
+
+    from dotenv import load_dotenv
+
+    load_dotenv(env_path)
+    return {"path": str(env_path), "loaded": True}
+
+
 # `${VAR}` and `${VAR:-default}`, the two forms the loader interpolates.
 # Matching only the first made a defaulted variable look like a literal, so
 # an intentionally-optional entry was reported as an unset credential.
@@ -242,6 +268,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     project_root = Path(__file__).resolve().parent.parent
+    # Before the registries load: the loader interpolates ${VAR} from the
+    # environment, so reading .env afterwards would leave the registry holding
+    # blanks while _check_env reported the same variables as set.
+    env_source = _load_repo_env(project_root)
+
     sources = [("report", load_report_mcp_registry)]
     if args.all:
         sources.append(("native", load_mcp_registry))
@@ -249,6 +280,7 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "host": os.uname().nodename,
         "project_root": str(project_root),
+        "env": env_source,
         "config": {
             "native": str(config_loader._NATIVE_CONFIG),
             "native_exists": config_loader._NATIVE_CONFIG.exists(),
@@ -294,6 +326,11 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"config: native={'y' if cfg['native_exists'] else 'n'} "
         f"legacy={'y' if cfg['legacy_exists'] else 'n'}"
+    )
+    env_info = payload["env"]
+    print(
+        f"env: {env_info['path']} "
+        f"({'loaded' if env_info['loaded'] else 'not found'})"
     )
     if cfg["legacy_exists"]:
         print(

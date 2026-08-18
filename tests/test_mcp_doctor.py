@@ -7,11 +7,17 @@ URL, an npm package spec, and a correctly-resolved sqlite path as missing.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
-from tools.mcp_doctor import _base_dir, _check_env, _looks_like_path
+from tools.mcp_doctor import (
+    _base_dir,
+    _check_env,
+    _load_repo_env,
+    _looks_like_path,
+)
 
 
 @pytest.mark.parametrize(
@@ -116,3 +122,53 @@ class TestEnvReporting:
         [entry] = _check_env(interpolated, raw)
 
         assert entry["source"] == "inline"
+
+
+class TestDotenvLoading:
+    """The diagnostic has to read the same environment as the runtime.
+
+    Every entry point calls `load_dotenv()`; this tool did not, so a key that
+    lives only in `.env` looked unset here and set everywhere else. The result
+    was a working server reported as UNSET_ENV — the exact false positive the
+    module docstring says makes the output worthless.
+    """
+
+    def test_a_variable_from_the_env_file_is_visible(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("PRISM_DOCTOR_PROBE", raising=False)
+        (tmp_path / ".env").write_text(
+            "PRISM_DOCTOR_PROBE=from-file\n", encoding="utf-8"
+        )
+
+        result = _load_repo_env(tmp_path)
+
+        assert result["loaded"] is True
+        assert os.environ.get("PRISM_DOCTOR_PROBE") == "from-file"
+
+    def test_an_exported_variable_beats_the_file(self, monkeypatch, tmp_path):
+        """A shell that set it explicitly meant it; the file must not overrule."""
+        monkeypatch.setenv("PRISM_DOCTOR_PROBE", "from-shell")
+        (tmp_path / ".env").write_text(
+            "PRISM_DOCTOR_PROBE=from-file\n", encoding="utf-8"
+        )
+
+        _load_repo_env(tmp_path)
+
+        assert os.environ["PRISM_DOCTOR_PROBE"] == "from-shell"
+
+    def test_a_checkout_without_an_env_file_still_runs(self, tmp_path):
+        result = _load_repo_env(tmp_path)
+
+        assert result["loaded"] is False
+        assert result["path"].endswith(".env")
+
+    def test_the_report_names_the_file_but_not_its_contents(self, monkeypatch, tmp_path):
+        """Saying how many keys were read would leak how many secrets exist."""
+        monkeypatch.delenv("SOME_KEY", raising=False)
+        (tmp_path / ".env").write_text(
+            "SOME_KEY=super-secret-value\n", encoding="utf-8"
+        )
+
+        result = _load_repo_env(tmp_path)
+
+        assert set(result) == {"path", "loaded"}
+        assert "super-secret-value" not in repr(result)

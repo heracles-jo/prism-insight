@@ -81,6 +81,7 @@ We'll know we're right when **`.env.example` 만 보고 설정한 새 호스트�
 - [ ] 체인 FALLBACK 로그를 INFO 로 내리면, 첫 소스가 상시 실패하는 상태(지금의 KRX)를 **어떻게 알아채는가**? 매 호출 WARNING 은 소음이지만 완전한 침묵은 Phase 4 가 고친 문제로 되돌아간다. 사이클당 1회 요약이 답일 수 있으나 미검증
 - [ ] `mcp_doctor` 의 인터프리터 검증을 어디까지 할 것인가. `import mcp` 만으로 충분한가, 아니면 `cores.market_data` 임포트까지 봐야 하는가 (자체 서버는 리포 코드를 임포트한다)
 - [ ] 보고된 호스트에서 실제로 종목명이 강등됐는지, 아니면 로그를 보고 추정한 것인지 **확인되지 않았다**. 이 저장소에서는 두 체인 모두 정상 해석한다
+- [ ] **이 호스트의 `.env` 에는 네 키가 하나도 없다**(Phase 2 구현 중 확인). 그래서 여기서 보이는 `firecrawl`·`perplexity` FAIL 은 거짓이 아니라 진짜다. 거짓 FAIL 은 키가 `.env` 에 있는 보고자 호스트에서 일어난다 — 프로브 키를 넣어 재현·수정 확인함
 
 ---
 
@@ -162,7 +163,7 @@ When **패치를 반영하고 새 호스트에서 처음 돌릴 때**, I want to
 | # | Phase | Description | Status | Parallel | Depends | PRP Plan |
 |---|-------|-------------|--------|----------|---------|----------|
 | 1 | 설정 안내 | `.env.example` + 문서에 새 변수 **6종**과 이유 | complete | with 2 | - | [plan](../plans/completed/mcp-env-setup-guidance.plan.md) |
-| 2 | 진단이 런타임과 같은 것을 보게 | `mcp_doctor` 가 `.env` 로드 | in-progress | with 1 | - | [plan](../plans/mcp-doctor-loads-dotenv.plan.md) |
+| 2 | 진단이 런타임과 같은 것을 보게 | `mcp_doctor` 가 `.env` 로드 | complete | with 1 | - | [plan](../plans/completed/mcp-doctor-loads-dotenv.plan.md) |
 | 3 | 인터프리터 검증 | 명령 존재가 아니라 서버 기동 가능 여부 | pending | - | 2 | - |
 | 4 | 복구된 실패의 로그 레벨 | 체인 FALLBACK, 그리고 상시 실패를 알아채는 법 | pending | - | - | - |
 
