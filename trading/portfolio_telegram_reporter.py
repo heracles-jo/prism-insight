@@ -42,15 +42,23 @@ _cfg = trading_settings()
 # read kis_devlp.yaml at import time.
 from telegram_bot_agent import TelegramBotAgent
 
-# Import US trading module (optional - may not be available)
-try:
-    from us_stock_trading import USStockTrading
-    US_TRADING_AVAILABLE = True
-except (ImportError, FileNotFoundError):
-    # FileNotFoundError as well as ImportError: us_stock_trading imports
-    # kis_auth, which reads kis_devlp.yaml at module scope, so a Toss-only
-    # install fails here with a missing file rather than a missing module.
-    US_TRADING_AVAILABLE = False
+def _us_trading_available() -> bool:
+    """Can the configured broker give us a US trader?
+
+    This used to import `USStockTrading` at module scope and treat the result as
+    the answer. That was wrong twice over: it made importing this module require
+    `kis_devlp.yaml` (us_stock_trading pulls in kis_auth), and it asked about KIS
+    specifically — so a Toss install answered "no" and the portfolio report
+    silently omitted every US position, though `us_trader()` would have served
+    them. Ask the factory the real question, lazily.
+    """
+    try:
+        from trading.brokers.factory import us_trader  # noqa: F401
+
+        return True
+    except Exception as exc:  # noqa: BLE001 - any failure means no US section
+        logger.warning(f"US trading unavailable: {exc}")
+        return False
 
 # Logging configuration
 logging.basicConfig(
@@ -379,7 +387,7 @@ class PortfolioTelegramReporter:
                 logger.error(f"Error fetching KR trading data for representative account '{kr_account['name']}': {str(e)}")
 
         # Fetch US trading data (if available)
-        if US_TRADING_AVAILABLE:
+        if _us_trading_available():
             us_account = self._get_primary_account_config("us")
             if us_account:
                 try:

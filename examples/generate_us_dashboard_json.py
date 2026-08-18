@@ -16,7 +16,6 @@ load_dotenv()  # Load environment variables from .env
 import sqlite3
 import json
 import sys
-import yaml
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Any, Optional
@@ -78,16 +77,11 @@ except ImportError:
     TRANSLATION_AVAILABLE = False
     logger.warning("Translation utility not found. English translation will be disabled.")
 
-# Config file loading (same as KR dashboard - shared KIS credentials)
-CONFIG_FILE = TRADING_DIR / "config" / "kis_devlp.yaml"
-try:
-    with open(CONFIG_FILE, encoding="UTF-8") as f:
-        _cfg = yaml.safe_load(f)
-except FileNotFoundError:
-    _cfg = {"default_mode": "demo"}
-    logger.warning(f"Config file not found: {CONFIG_FILE}. Using default mode (demo).")
+# Trading settings come from whichever broker is configured, so a Toss-only
+# install is not asked for KIS credentials just to render a dashboard.
+from trading.brokers.settings import trading_settings
 
-from trading import kis_auth as ka
+_cfg = trading_settings()
 
 
 class USDashboardDataGenerator:
@@ -100,6 +94,12 @@ class USDashboardDataGenerator:
         default_mode = str(_cfg.get("default_mode", "demo")).strip().lower()
         svr = "vps" if default_mode == "demo" else "prod"
         try:
+            # Imported here, not at module scope: kis_auth reads kis_devlp.yaml
+            # on import, and account keys are a KIS concept. Under Toss this
+            # fails and the dashboard is left unscoped by account, which is what
+            # a failed resolution already produced.
+            from trading import kis_auth as ka
+
             return ka.resolve_account(svr=svr, market="us")["account_key"]
         except Exception as exc:
             logger.warning(f"US primary account resolution failed: {exc}")

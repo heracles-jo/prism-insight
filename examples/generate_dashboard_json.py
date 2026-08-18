@@ -78,16 +78,23 @@ except FileNotFoundError:
     _cfg = {"default_mode": "demo"}
     logger.warning(f"Configuration file not found: {CONFIG_FILE}. Using default mode (demo).")
 
-# Import Korea Investment & Securities API module
-try:
-    from trading.domestic_stock_trading import DomesticStockTrading
-    KIS_AVAILABLE = True
-except (ImportError, FileNotFoundError):
-    # FileNotFoundError, not just ImportError: kis_auth reads kis_devlp.yaml at
-    # module scope, so a Toss-only install fails here with a missing file
-    # rather than a missing module. The guard has to catch both.
-    KIS_AVAILABLE = False
-    logger.warning("Korea Investment & Securities API module not found. Cannot fetch live trading data.")
+def _live_trading_available() -> bool:
+    """Can the configured broker give us a domestic trader?
+
+    This used to import `DomesticStockTrading` at module scope and treat the
+    result as the answer, which was wrong twice over. It made loading this
+    module require `kis_devlp.yaml`, and it asked about KIS specifically — so a
+    Toss install answered "no" and the dashboard silently rendered an empty
+    portfolio even though `domestic_trader()` would have worked. Ask the factory
+    the question actually being asked, and ask it lazily.
+    """
+    try:
+        from trading.brokers.factory import domestic_trader  # noqa: F401
+
+        return True
+    except Exception as exc:  # noqa: BLE001 - any failure means no live data
+        logger.warning(f"Live trading data unavailable: {exc}")
+        return False
 
 
 class DashboardDataGenerator:
@@ -122,8 +129,8 @@ class DashboardDataGenerator:
     
     def get_kis_trading_data(self) -> Dict[str, Any]:
         """한국투자증권 API로부터 실전투자 데이터 가져오기"""
-        if not KIS_AVAILABLE:
-            logger.warning("한국투자증권 API를 사용할 수 없습니다.")
+        if not _live_trading_available():
+            logger.warning("실전투자 API를 사용할 수 없습니다.")
             return {"portfolio": [], "account_summary": {}}
         
         try:

@@ -17,7 +17,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
-from trading import kis_auth as ka
+
+from trading.brokers.settings import trading_settings
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -63,9 +64,18 @@ def _sell_verdict(change_pct: float) -> str:
 
 
 def _get_primary_account_key(market: str) -> str | None:
-    default_mode = str(ka.getEnv().get("default_mode", "demo")).strip().lower()
+    """Account key used to scope the weekly numbers, or None to leave them unscoped.
+
+    Account keys are a KIS concept, so `kis_auth` is imported here rather than at
+    module scope: it reads `kis_devlp.yaml` on import, which a Toss-only install
+    has no reason to own. Under Toss the import fails and the report is simply
+    not scoped by account — the same outcome resolution failure already had.
+    """
+    default_mode = str(trading_settings().get("default_mode", "demo")).strip().lower()
     svr = "vps" if default_mode == "demo" else "prod"
     try:
+        from trading import kis_auth as ka
+
         return ka.resolve_account(svr=svr, market=market)["account_key"]
     except Exception as exc:
         logger.warning(f"Primary {market} account resolution failed: {exc}")
