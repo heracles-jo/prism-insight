@@ -73,6 +73,106 @@ def is_demo() -> bool:
     return trading_mode() == DEMO
 
 
+KIS_CONFIG_FILE = CONFIG_DIR / "kis_devlp.yaml"
+
+# Trading settings live in whichever broker config is in use, so a Toss-only
+# install never needs a KIS file. Defaults are here rather than duplicated in
+# both YAML examples — two copies would drift, and the file that happens to be
+# missing would silently change behaviour.
+_TRADING_DEFAULTS: dict[str, Any] = {
+    "default_unit_amount": 100_000,
+    "default_unit_amount_usd": 100,
+    "auto_trading": True,
+    "default_mode": DEMO,
+}
+
+
+def _to_bool(value: Any, default: bool) -> bool:
+    """YAML may hand back a real bool or the string a human typed."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _to_int(value: Any, default: int, key: str) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        logger.warning("[BROKER] %s=%r is not a number; using %s", key, value, default)
+        return default
+
+
+def trading_settings() -> dict[str, Any]:
+    """Trading settings from the configured broker's own file.
+
+    Never raises and never requires a file. These values all have defaults, so a
+    missing or unreadable config is a reason to fall back, not to refuse to
+    start — the batch that dies at 09:00 has its own cost.
+
+    Deliberately reads the YAML directly instead of importing `kis_auth`, which
+    loads `kis_devlp.yaml` at module scope. Importing it here would make this
+    module part of the very problem it exists to remove.
+    """
+    settings = dict(_TRADING_DEFAULTS)
+
+    try:
+        source = TOSS_CONFIG_FILE if selected_broker() == TOSS else KIS_CONFIG_FILE
+    except BrokerConfigError:
+        # An unsupported PRISM_BROKER is reported by selected_broker() at the
+        # point it matters; here it just means "use the defaults".
+        return settings
+
+    raw: dict[str, Any] = {}
+    if source.exists():
+        try:
+            with open(source, encoding="utf-8") as handle:
+                raw = yaml.safe_load(handle) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            logger.warning("[BROKER] could not read %s (%s); using defaults", source, exc)
+            raw = {}
+
+    for key in ("default_unit_amount", "default_unit_amount_usd"):
+        if raw.get(key) is not None:
+            settings[key] = _to_int(raw[key], _TRADING_DEFAULTS[key], key)
+    if raw.get("auto_trading") is not None:
+        settings["auto_trading"] = _to_bool(raw["auto_trading"], _TRADING_DEFAULTS["auto_trading"])
+    if raw.get("default_mode") is not None:
+        mode = str(raw["default_mode"]).strip().lower()
+        if mode in {DEMO, REAL}:
+            settings["default_mode"] = mode
+        else:
+            logger.warning("[BROKER] default_mode=%r in %s is not recognised; using demo",
+                           raw["default_mode"], source)
+    return settings
+
+
+def buy_amount(market: str) -> int:
+    """Per-order budget: environment, then the broker's file, then the default."""
+    from_env = toss_buy_amount(market)
+    if from_env is not None:
+        return from_env
+    key = "default_unit_amount" if market.upper() == "KR" else "default_unit_amount_usd"
+    return int(trading_settings()[key])
+
+
+def auto_trading_enabled() -> bool:
+    """Whether orders may actually be placed, per the broker's config."""
+    return bool(trading_settings()["auto_trading"])
+
+
+def configured_mode() -> str:
+    """`demo`/`real` from the broker's file. `PRISM_TRADING_MODE` still wins.
+
+    `trading_mode()` is unchanged and remains the authority; this is only the
+    fallback beneath it, so the two cannot disagree about which one applies.
+    """
+    if os.getenv("PRISM_TRADING_MODE"):
+        return trading_mode()
+    return str(trading_settings()["default_mode"])
+
+
 def load_toss_config(path: Path | None = None) -> dict[str, Any]:
     """Read `toss_config.yaml`, with env overrides for containerised runs."""
     target = path or TOSS_CONFIG_FILE

@@ -538,3 +538,125 @@ def test_kr_callers_still_refuse_a_fractional_quantity():
 
     # tools/hardstop_seller.py:438 and trend_exit_seller.py — `int(checked_qty or 0)`
     assert int(quantity or 0) <= 0, "the KR guard collapses a sub-share to zero and refuses"
+
+
+# ── Broker-scoped trading settings (toss-only-startup Phase 1) ───────────────
+
+
+def _toss_only(monkeypatch, tmp_path, **overrides):
+    """Point settings at a Toss config and a KIS path that does not exist."""
+    values = {"default_unit_amount": 250000, "auto_trading": False,
+              "default_mode": "real", **overrides}
+    path = tmp_path / "toss_config.yaml"
+    path.write_text(
+        "client_id: c_abc\nclient_secret: s_xyz\n"
+        + "".join(f"{k}: {v}\n" for k, v in values.items()),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PRISM_BROKER", "toss")
+    monkeypatch.setattr(config, "TOSS_CONFIG_FILE", path)
+    monkeypatch.setattr(config, "KIS_CONFIG_FILE", tmp_path / "absent_kis.yaml")
+    return path
+
+
+def test_trading_settings_come_from_the_toss_file_without_any_kis_config(monkeypatch, tmp_path):
+    """The point of this phase: no kis_devlp.yaml needed to read these."""
+    _toss_only(monkeypatch, tmp_path)
+
+    s = config.trading_settings()
+    assert s["default_unit_amount"] == 250000
+    assert s["auto_trading"] is False
+    assert s["default_mode"] == "real"
+
+
+def test_settings_fall_back_to_defaults_when_no_config_exists(monkeypatch, tmp_path):
+    """A missing file is a reason to fall back, not to refuse to start."""
+    monkeypatch.setenv("PRISM_BROKER", "toss")
+    monkeypatch.setattr(config, "TOSS_CONFIG_FILE", tmp_path / "absent_toss.yaml")
+    monkeypatch.setattr(config, "KIS_CONFIG_FILE", tmp_path / "absent_kis.yaml")
+
+    assert config.trading_settings() == config._TRADING_DEFAULTS
+
+
+def test_the_kis_path_still_reads_kis_devlp(monkeypatch, tmp_path):
+    """Existing KIS installs must see no change."""
+    kis = tmp_path / "kis_devlp.yaml"
+    kis.write_text("default_unit_amount: 7777\nauto_trading: false\n", encoding="utf-8")
+    monkeypatch.delenv("PRISM_BROKER", raising=False)
+    monkeypatch.setattr(config, "KIS_CONFIG_FILE", kis)
+
+    s = config.trading_settings()
+    assert s["default_unit_amount"] == 7777
+    assert s["auto_trading"] is False
+
+
+def test_the_environment_outranks_the_file(monkeypatch, tmp_path):
+    _toss_only(monkeypatch, tmp_path)
+    monkeypatch.setenv("PRISM_BUY_AMOUNT_KRW", "999000")
+
+    assert config.buy_amount("KR") == 999000
+
+
+def test_the_file_is_used_when_the_environment_is_silent(monkeypatch, tmp_path):
+    _toss_only(monkeypatch, tmp_path)
+
+    assert config.buy_amount("KR") == 250000
+    assert config.buy_amount("US") == 100  # default; not set in the file
+
+
+@pytest.mark.parametrize("raw, expected", [("true", True), ("yes", True), ("on", True),
+                                           ("false", False), ("no", False), ("0", False)])
+def test_auto_trading_accepts_what_a_human_types(monkeypatch, tmp_path, raw, expected):
+    """YAML hands back a real bool or the string, depending on quoting."""
+    _toss_only(monkeypatch, tmp_path, auto_trading=f'"{raw}"')
+
+    assert config.auto_trading_enabled() is expected
+
+
+def test_a_nonnumeric_amount_falls_back_and_warns(monkeypatch, tmp_path, caplog):
+    import logging
+
+    _toss_only(monkeypatch, tmp_path, default_unit_amount='"많이"')
+
+    with caplog.at_level(logging.WARNING):
+        assert config.trading_settings()["default_unit_amount"] == 100_000
+    assert "not a number" in caplog.text
+
+
+def test_an_unrecognised_default_mode_falls_back_to_demo(monkeypatch, tmp_path):
+    _toss_only(monkeypatch, tmp_path, default_mode="prod")
+
+    assert config.trading_settings()["default_mode"] == "demo"
+
+
+def test_a_malformed_config_does_not_stop_startup(monkeypatch, tmp_path):
+    """Refusing to start is not safer than starting on defaults."""
+    path = tmp_path / "toss_config.yaml"
+    path.write_text("default_unit_amount: [unclosed\n", encoding="utf-8")
+    monkeypatch.setenv("PRISM_BROKER", "toss")
+    monkeypatch.setattr(config, "TOSS_CONFIG_FILE", path)
+    monkeypatch.setattr(config, "KIS_CONFIG_FILE", tmp_path / "absent_kis.yaml")
+
+    assert config.trading_settings() == config._TRADING_DEFAULTS
+
+
+def test_the_environment_still_decides_the_mode(monkeypatch, tmp_path):
+    """PRISM_TRADING_MODE outranks the file, so the two cannot disagree."""
+    _toss_only(monkeypatch, tmp_path, default_mode="real")
+    monkeypatch.setenv("PRISM_TRADING_MODE", "demo")
+
+    assert config.configured_mode() == "demo"
+
+
+def test_settings_module_does_not_pull_in_kis(monkeypatch):
+    """The premise of the whole effort: this module imports without KIS."""
+    import subprocess
+    import sys
+
+    r = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; import trading.brokers.settings; print('kis_auth' in sys.modules)"],
+        capture_output=True, text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "False"
