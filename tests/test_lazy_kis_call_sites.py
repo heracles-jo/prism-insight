@@ -138,3 +138,53 @@ def test_an_unresolvable_account_leaves_the_report_unscoped(monkeypatch, toss_se
     )
 
     assert weekly_insight_report._get_primary_account_key("kr") is None
+
+
+def test_the_trading_loop_books_positions_under_the_key_it_reads(toss_selected):
+    """The loop's account must match the one rows are stamped with.
+
+    This was the worst of the desyncs, because it was not merely an empty
+    query. `_get_trading_accounts` asked kis_auth unconditionally, so on a Toss
+    install the loop ran under `vps:<kis_account>:01` — wrong broker *and*
+    wrong mode — while migration wrote `prod:<toss_seq>:01`. Buys placed on the
+    live Toss account were then booked under a KIS demo key that the holdings
+    scan never selects, so those positions had no stop-loss, no target and no
+    exit path at all.
+    """
+    import stock_tracking_agent
+
+    agent = stock_tracking_agent.StockTrackingAgent.__new__(
+        stock_tracking_agent.StockTrackingAgent
+    )
+    accounts = agent._get_trading_accounts()
+
+    assert len(accounts) == 1, "Toss has a single account; fan-out is a KIS feature"
+    assert accounts[0]["account_key"] == settings.primary_account_scope("kr")[0]
+
+
+def test_account_log_labels_do_not_need_kis_config(toss_selected):
+    """Masking is pure string work, but it used to live behind a config read.
+
+    `kis_auth.mask_account_number` sits in a module that opens kis_devlp.yaml on
+    import, so on a Toss-only install every log line naming an account raised.
+    """
+    import stock_tracking_agent
+
+    label = stock_tracking_agent.StockTrackingAgent._safe_account_log_label(
+        {"name": "toss-primary", "account_key": "prod:12345678:01"}
+    )
+
+    assert "12345678" not in label, "the raw account number reached the log"
+    assert "toss-primary" in label and "prod:" in label
+
+
+@pytest.mark.parametrize(
+    "number", ["", "1", "1234", "12345", "123456", "12345678", "1234567890"]
+)
+def test_the_local_mask_matches_the_kis_one(number):
+    """The copy must stay identical to the original, or it is a silent divergence."""
+    from trading.kis_auth import mask_account_number as kis_mask
+
+    from stock_tracking_agent import _mask_account_number as local_mask
+
+    assert local_mask(number) == kis_mask(number)

@@ -198,6 +198,28 @@ _kis_auth_spec = _importlib_util.spec_from_file_location("kis_auth", PROJECT_ROO
 ka = _importlib_util.module_from_spec(_kis_auth_spec)
 _kis_auth_spec.loader.exec_module(ka)
 
+
+def _load_root_broker_settings():
+    """Root `trading.brokers.settings`, loaded by path like kis_auth above.
+
+    `prism-us/` sits ahead of the project root on sys.path, so `prism-us/trading/`
+    shadows the root `trading` package and `import trading.brokers.settings`
+    raises ModuleNotFoundError here. The module imports nothing from its own
+    package, so loading it standalone is safe.
+    """
+    module_name = "prism_root_trading_broker_settings"
+    cached = sys.modules.get(module_name)
+    if cached is not None:
+        return cached
+
+    spec = _importlib_util.spec_from_file_location(
+        module_name, PROJECT_ROOT / "trading/brokers/settings.py"
+    )
+    module = _importlib_util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
 # Create MCPApp instance
 app = MCPApp(name="us_stock_tracking")
 
@@ -818,6 +840,21 @@ class USStockTrackingAgent:
             return False
 
     def _get_trading_accounts(self) -> List[Dict[str, Any]]:
+        """Accounts this loop trades and books US positions under.
+
+        Must agree with whatever stamped the rows. `tracking/db_schema` resolves
+        that through `primary_account_scope()`, so asking `kis_auth` here would
+        file migrated rows under the Toss account and every new row under a KIS
+        one — the same reader/writer split the KR loop had, where positions
+        opened on the live account became invisible to the sell path.
+
+        Toss has a single account; multi-account fan-out stays a KIS feature.
+        """
+        settings = _load_root_broker_settings()
+        if settings.selected_broker() == settings.TOSS:
+            account_key, name, product, _mode = settings.primary_account_scope("us")
+            return [{"account_key": account_key, "name": name, "product": product}]
+
         default_mode = str(ka.getEnv().get("default_mode", "demo")).strip().lower()
         svr = "vps" if default_mode == "demo" else "prod"
         return ka.get_configured_accounts(svr=svr, market="us")
