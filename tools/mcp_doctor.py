@@ -29,6 +29,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +43,32 @@ from cores.llm.config_loader import (  # noqa: E402
     load_mcp_registry,
     load_report_mcp_registry,
 )
+
+def _load_repo_env(project_root: Path) -> dict:
+    """Read the repo `.env`, the way every runtime entry point does.
+
+    Without this the diagnostic reads a different environment than the thing it
+    is diagnosing: `cores/analysis.py` and the MCP servers call `load_dotenv()`
+    at start-up, so a key that lives only in `.env` is present for them and
+    absent here. The tool then reports a working server as UNSET_ENV — the
+    false positive its own docstring calls indistinguishable from a real
+    breakage, and the reason two hosts' outputs could not be compared.
+
+    `load_dotenv` does not override an already-exported variable, so a shell
+    that set one explicitly still wins, exactly as it does at runtime.
+
+    Returns where it looked and whether it found anything — never what it read.
+    Two hosts disagreeing is only informative if you know which file each used.
+    """
+    env_path = project_root / ".env"
+    if not env_path.exists():
+        return {"path": str(env_path), "loaded": False}
+
+    from dotenv import load_dotenv
+
+    load_dotenv(env_path)
+    return {"path": str(env_path), "loaded": True}
+
 
 # `${VAR}` and `${VAR:-default}`, the two forms the loader interpolates.
 # Matching only the first made a defaulted variable look like a literal, so
@@ -58,6 +85,7 @@ MISSING_COMMAND = "MISSING_COMMAND"
 MISSING_PATH = "MISSING_PATH"
 UNSET_ENV = "UNSET_ENV"
 ABSOLUTE_PATH = "ABSOLUTE_PATH"
+CANNOT_IMPORT = "CANNOT_IMPORT"
 
 
 @dataclass
@@ -68,10 +96,73 @@ class ServerReport:
     problems: list[str] = field(default_factory=list)
     paths: list[dict] = field(default_factory=list)
     env: list[dict] = field(default_factory=list)
+    launch: dict | None = None
 
     @property
     def healthy(self) -> bool:
         return not self.problems
+
+
+_PYTHON_COMMAND = re.compile(r"(^|/)(python|python3|python3\.\d+)$")
+
+
+def _launch_module(command: str, args) -> str | None:
+    """The module a `python -m MODULE` server would run, if that is what it is.
+
+    Servers launched by npx or uv are somebody else's dependency problem; only
+    the ones this repo starts with an interpreter are checked.
+    """
+    if not _PYTHON_COMMAND.search(command or ""):
+        return None
+    args = list(args or [])
+    if "-m" not in args:
+        return None
+    index = args.index("-m")
+    return args[index + 1] if index + 1 < len(args) else None
+
+
+def _check_launch(command: str, args, spec_env: dict, project_root: Path) -> dict | None:
+    """Can this interpreter actually import the module it is told to run?
+
+    `shutil.which` answers whether a `python3` exists, which is not the
+    question. The reported failure was a host whose system interpreter is 3.9
+    and has neither `mcp` nor the repo's dependencies: the command was found,
+    the server died at launch, and the only symptom downstream was an empty
+    report section.
+
+    Importing the module is exactly what `python -m` does first, so this checks
+    the real thing rather than a proxy for it. It runs with the server's own
+    declared environment — PYTHONPATH included — because that is what the
+    server will be given.
+
+    Returns None when there is nothing to check, so a server this does not
+    apply to is not reported as passing something it never took.
+    """
+    module = _launch_module(command, args)
+    if module is None:
+        return None
+
+    env = {**os.environ, **{k: str(v) for k, v in (spec_env or {}).items()}}
+    try:
+        result = subprocess.run(
+            [command, "-c", f"import {module}"],
+            capture_output=True, text=True, timeout=30,
+            cwd=str(project_root), env=env,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"module": module, "importable": False, "detail": type(exc).__name__}
+
+    if result.returncode == 0:
+        return {"module": module, "importable": True, "detail": ""}
+
+    # The last line is the exception; the traceback above it is noise here, and
+    # a full traceback could carry a path that differs between hosts.
+    lines = [line for line in (result.stderr or "").splitlines() if line.strip()]
+    return {
+        "module": module,
+        "importable": False,
+        "detail": lines[-1][:120] if lines else f"exit {result.returncode}",
+    }
 
 
 def _check_env(spec_env: dict, raw_env: dict | None = None) -> list[dict]:
@@ -217,6 +308,14 @@ def inspect(registry, project_root: Path, raw_servers: dict | None = None) -> li
         )
         if not command_found:
             report.problems.append(MISSING_COMMAND)
+        else:
+            # Only worth asking once the command exists; otherwise the failure
+            # is already named and running it would just say so again.
+            report.launch = _check_launch(
+                spec.command, spec.args, dict(spec.env or {}), project_root
+            )
+            if report.launch and not report.launch["importable"]:
+                report.problems.append(CANNOT_IMPORT)
         for path in report.paths:
             if not path["exists"]:
                 report.problems.append(MISSING_PATH)
@@ -242,6 +341,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     project_root = Path(__file__).resolve().parent.parent
+    # Before the registries load: the loader interpolates ${VAR} from the
+    # environment, so reading .env afterwards would leave the registry holding
+    # blanks while _check_env reported the same variables as set.
+    env_source = _load_repo_env(project_root)
+
     sources = [("report", load_report_mcp_registry)]
     if args.all:
         sources.append(("native", load_mcp_registry))
@@ -249,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "host": os.uname().nodename,
         "project_root": str(project_root),
+        "env": env_source,
         "config": {
             "native": str(config_loader._NATIVE_CONFIG),
             "native_exists": config_loader._NATIVE_CONFIG.exists(),
@@ -278,6 +383,7 @@ def main(argv: list[str] | None = None) -> int:
                     "command_found": r.command_found,
                     "paths": r.paths,
                     "env": r.env,
+                    "launch": r.launch,
                     "problems": sorted(set(r.problems)),
                 }
                 for r in reports
@@ -294,6 +400,11 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"config: native={'y' if cfg['native_exists'] else 'n'} "
         f"legacy={'y' if cfg['legacy_exists'] else 'n'}"
+    )
+    env_info = payload["env"]
+    print(
+        f"env: {env_info['path']} "
+        f"({'loaded' if env_info['loaded'] else 'not found'})"
     )
     if cfg["legacy_exists"]:
         print(
@@ -318,6 +429,14 @@ def main(argv: list[str] | None = None) -> int:
             for entry in server["env"]:
                 state = "set" if entry["set"] else "UNSET"
                 print(f"        env {entry['key']} <- {entry['source']} [{state}]")
+            launch = server.get("launch")
+            if launch:
+                if launch["importable"]:
+                    print(f"        import {launch['module']}: ok")
+                else:
+                    print(
+                        f"        import {launch['module']}: FAILED — {launch['detail']}"
+                    )
             if server["problems"]:
                 print(f"        problems: {', '.join(sorted(set(server['problems'])))}")
 
