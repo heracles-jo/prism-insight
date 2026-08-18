@@ -177,7 +177,7 @@ PRISM_BROKER=toss + toss_config.yaml  →  정상 기동
 |---|-------|-------------|--------|----------|---------|----------|
 | 1 | 브로커별 매매 설정 로더 | `toss_config.yaml`에 매매 설정 추가, `settings.trading_settings()` | complete | with 2 | - | [plan](../plans/completed/broker-trading-settings.plan.md) |
 | 2 | 진입점 지연 임포트 | 크래시하는 3곳의 KIS 임포트를 함수 내부로 | complete | with 1 | - | `1f6be49` |
-| 3 | tripwire + 회귀 고정 | 모듈 스코프 KIS 임포트 금지 테스트, KIS 99/99 | pending | - | 1, 2 | - |
+| 3 | tripwire + 회귀 고정 | 모듈 스코프 KIS 임포트 금지 테스트, KIS 99/99 | complete | - | 1, 2 | `9fab29c` |
 | 4 | 오류 메시지·문서 | 토스 사용자에게 KIS 파일을 안내하지 않도록, 가이드 갱신 | pending | - | 3 | - |
 
 ### Phase Details
