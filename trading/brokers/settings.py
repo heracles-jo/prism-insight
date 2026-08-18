@@ -217,3 +217,89 @@ def toss_buy_amount(market: str) -> int | None:
     except ValueError:
         logger.warning("[BROKER] %s=%r is not a number; ignoring", env, raw)
         return None
+
+
+# Product code for a Toss account. KIS distinguishes products (01 = 종합위탁,
+# and others) within one account number; Toss does not, so the slot is filled
+# with the KIS default to keep the three-part account_key shape that consumers
+# such as `stock_tracking_agent._safe_account_log_label` split on.
+_TOSS_PRODUCT_CODE = "01"
+
+
+def primary_account_scope(
+    market: str, *, kis_auth_loader: Any | None = None
+) -> tuple[str, str, str, str]:
+    """Identity of the account this install trades under, per the chosen broker.
+
+    Returns `(account_key, account_name, product_code, mode)`. `account_key`
+    keeps KIS's `{svr}:{account}:{product}` shape for every broker, because the
+    value is stored in the DB and split by existing callers.
+
+    This exists because DB migration has to stamp an owner onto legacy rows, and
+    it used to ask `kis_auth` directly. That made a Toss user create
+    `kis_devlp.yaml` — a file they have no account in — just to name the rows.
+    The question is "who does this install trade as", which is the broker's to
+    answer, not KIS's.
+
+    `kis_auth_loader` is for callers that cannot reach the root `trading`
+    package by name: `prism-us/trading/` shadows it on `sys.path`, so the US
+    migration loads `kis_auth` from an explicit path instead. It is a callable
+    rather than a module so that a Toss install never loads it at all — the
+    whole point being that importing it reads `kis_devlp.yaml`.
+    """
+    broker = selected_broker()
+
+    if broker == TOSS:
+        config = load_toss_config()
+        account_seq = str(config.get("account_seq") or "").strip()
+        if not account_seq:
+            raise BrokerConfigError(
+                "Toss is selected but account_seq is missing.\n"
+                f"  set account_seq in {TOSS_CONFIG_FILE.name}, or set "
+                "TOSS_ACCOUNT_SEQ."
+            )
+        mode = trading_mode()
+        svr = "vps" if mode == DEMO else "prod"
+        name = str(config.get("account_name") or "toss-primary").strip()
+        return (
+            f"{svr}:{account_seq}:{_TOSS_PRODUCT_CODE}",
+            name,
+            _TOSS_PRODUCT_CODE,
+            mode,
+        )
+
+    # Loaded here, not at module scope: kis_auth reads kis_devlp.yaml on import,
+    # and this module exists to keep that off a Toss install's path.
+    if kis_auth_loader is not None:
+        ka = kis_auth_loader()
+    else:
+        from trading import kis_auth as ka
+
+    default_mode = str(ka.getEnv().get("default_mode", DEMO)).strip().lower()
+    svr = "vps" if default_mode == DEMO else "prod"
+    account = ka.resolve_account(svr=svr, market=market)
+    mode = DEMO if account["svr"] == "vps" else REAL
+    return account["account_key"], account["name"], account["product"], mode
+
+
+def broker_config_hint() -> str:
+    """Where to fix account configuration, named for the broker actually chosen.
+
+    Error messages used to point everyone at `kis_devlp.yaml`, which sends a
+    Toss user to a file that is not theirs and has nothing to do with the
+    failure they are looking at.
+    """
+    try:
+        broker = selected_broker()
+    except BrokerConfigError:
+        return (
+            "PRISM_BROKER is set to an unsupported value; "
+            f"expected one of {', '.join(sorted(SUPPORTED_BROKERS))}."
+        )
+
+    if broker == TOSS:
+        return (
+            f"Please ensure account_seq is set in {TOSS_CONFIG_FILE.name} "
+            "(or TOSS_ACCOUNT_SEQ)."
+        )
+    return f"Please ensure at least one account is configured in {KIS_CONFIG_FILE.name}."
