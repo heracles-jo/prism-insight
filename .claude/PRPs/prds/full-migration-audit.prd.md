@@ -127,7 +127,8 @@ Phase 1+2 (트립와이어 확장 + P0 수정). 이것만으로 "실금전 위�
 |---|-------|-------------|--------|----------|---------|----------|
 | 1 | 감사 체계 강화 | 트립와이어 사각지대 7종 커버 + 감사 보고서 초판 (알려진 결함 = 실패 테스트로 고정) | complete | - | - | [plan](../plans/completed/audit-tripwire-hardening.plan.md) · [report](../reports/full-migration-audit-report.md) |
 | 2 | P0 실금전 수정 | 매수금액 설정 체인, 강제청산 브로커 인식, US 소수점 매도, DB 경로 단일화, US 모듈 스코프 KIS 로드 제거, BrokerPort 계약 보강 | complete | - | 1 | [plan](../plans/completed/p0-money-path-fixes.plan.md) · [report](../reports/p0-money-path-fixes-report.md) |
-| 3 | KIS 잔재 제거 (KR) | 대시보드 mode, stance_mark, archive enricher, readiness tool, messaging 구독자 처리 결정 | pending | with 4 | 2 | - |
+| 2.5 | Toss US 주문 경로 복구 | PR #9 2차 리뷰 10건: 인자 철자 불일치로 Toss US 주문이 브로커에 미도달, 응답 Decimal 바인딩 실패, 행 삭제 선행으로 인한 포지션 손실, 누적 롤백 부재 | in-progress | - | 2 | [plan](../plans/toss-us-order-path-repair.plan.md) |
+| 3 | KIS 잔재 제거 (KR) | 대시보드 mode, stance_mark, archive enricher, readiness tool, messaging 구독자 처리 결정 | pending | with 4 | 2.5 | - |
 | 4 | 데이터 소스 정리 | KRX OpenAPI 체인 등록 + 기본 순서 재정의, 로그인 의존 10+파일 이전, 네이버 공용 클라이언트, .env.example/docs 정리 | pending | with 3 | 2 | - |
 | 5 | KR/US 대칭화 | v2.21.2 수정 US 반영, retry/_safe_float/checked-holding, US conftest 브로커 env, US 브로커 테스트 신설, monkeypatch 우회 제거 | pending | - | 2 | - |
 | 6 | 드리프트 청소 + 최종 보고 | oneil_fallback 단일화, 상수/URL/KST 통합, KisBroker 결정, 모델명 중앙화(could), 최종 감사 보고서 + CLAUDE.md 갱신 | pending | - | 3, 4, 5 | - |
