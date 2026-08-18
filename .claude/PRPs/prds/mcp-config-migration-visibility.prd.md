@@ -162,7 +162,7 @@ When **패치를 반영하고 새 호스트에서 처음 돌릴 때**, I want to
 | # | Phase | Description | Status | Parallel | Depends | PRP Plan |
 |---|-------|-------------|--------|----------|---------|----------|
 | 1 | 설정 안내 | `.env.example` + 문서에 새 변수 **6종**과 이유 | complete | with 2 | - | [plan](../plans/completed/mcp-env-setup-guidance.plan.md) |
-| 2 | 진단이 런타임과 같은 것을 보게 | `mcp_doctor` 가 `.env` 로드 | pending | with 1 | - | - |
+| 2 | 진단이 런타임과 같은 것을 보게 | `mcp_doctor` 가 `.env` 로드 | in-progress | with 1 | - | [plan](../plans/mcp-doctor-loads-dotenv.plan.md) |
 | 3 | 인터프리터 검증 | 명령 존재가 아니라 서버 기동 가능 여부 | pending | - | 2 | - |
 | 4 | 복구된 실패의 로그 레벨 | 체인 FALLBACK, 그리고 상시 실패를 알아채는 법 | pending | - | - | - |
 
