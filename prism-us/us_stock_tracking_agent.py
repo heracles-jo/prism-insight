@@ -240,6 +240,15 @@ def _mask_account_number(account_number: str | None) -> str:
     return f"{account_str[:2]}{'*' * (len(account_str) - 4)}{account_str[-2:]}"
 
 
+class _SkipOrderForRow(Exception):
+    """This row has nothing to send to the broker; skip the order, keep going.
+
+    Raised where the sell quantity resolves to zero. Distinct from a failure:
+    the caller has already logged what needs reconciling and must not treat it
+    as an error worth retrying.
+    """
+
+
 def _load_root_broker_settings():
     """Root `trading.brokers.settings`, loaded by path like kis_auth above.
 
@@ -2856,20 +2865,26 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     # position exit instead: sell the whole holding once and delete
                     # ALL rows for the ticker so DB and broker stay consistent.
                     will_queue = False
+                    _broker_settings = _load_root_broker_settings()
+                    try:
+                        _is_toss = _broker_settings.selected_broker() == _broker_settings.TOSS
+                    except Exception:  # noqa: BLE001 - an unreadable broker is not Toss
+                        _is_toss = False
                     if remaining_rows > 1 and current_price > 0:
-                        try:
-                            async with ExecutionService.us(account_name=stock.get("account_name")) as _probe:
-                                if getattr(_probe, "name", "kis") == "toss":
-                                    # Toss has no order queue at all: an
-                                    # off-session order fails explicitly rather
-                                    # than being queued, so a partial sell must
-                                    # never be escalated to a full exit here.
-                                    # This also keeps a transient session-
-                                    # calendar API failure (is_market_open →
-                                    # False on a network blip) from liquidating
-                                    # the whole position.
-                                    will_queue = False
-                                else:
+                        if _is_toss:
+                            # Toss has no order queue at all: an off-session order
+                            # fails explicitly rather than being queued, so a
+                            # partial sell must never be escalated to a full exit.
+                            # Decided OUTSIDE the probe: when this lived inside the
+                            # try, any error opening the context (bad config, dry-run
+                            # sqlite, missing credentials) fell through to the
+                            # except below and forced the very full exit it exists
+                            # to prevent. Asking the broker also spares building a
+                            # whole Toss client just to read a constant.
+                            will_queue = False
+                        else:
+                            try:
+                                async with ExecutionService.us(account_name=stock.get("account_name")) as _probe:
                                     # KIS: order gets queued when the market is
                                     # closed AND the reserved-order window is
                                     # unavailable (pre-10:00 KST). Pure clock
@@ -2879,9 +2894,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                         lambda: (not _probe.is_market_open())
                                         and (not _probe.is_reserved_order_available())
                                     )
-                        except Exception as probe_err:
-                            logger.warning(f"{ticker} could not probe order window ({probe_err}); assuming will_queue=True (safe full-exit)")
-                            will_queue = True
+                            except Exception as probe_err:
+                                logger.warning(f"{ticker} could not probe order window ({probe_err}); assuming will_queue=True (safe full-exit)")
+                                will_queue = True
 
                     plan = decide_us_sell_plan(remaining_rows, will_queue)
                     logger.info(f"{ticker} sell plan: {plan} (remaining_rows={remaining_rows}, will_queue={will_queue})")
@@ -2894,6 +2909,34 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     # Computed from plan/remaining_rows (always in scope here);
                     # sell_quantity is not defined on the current_price<=0 path.
                     sell_denominator = remaining_rows if plan == "fractional" else 1
+
+                    # Toss refuses an out-of-session order outright — there is no
+                    # queue to fall into — but the holdings rows below are deleted
+                    # and their P&L booked BEFORE the order is placed. Without this
+                    # gate a refused sell left no record of the position at all
+                    # while the shares stayed at the broker. Skipping keeps the row
+                    # untouched, so the next pass retries normally.
+                    if _is_toss and current_price > 0:
+                        try:
+                            async with ExecutionService.us(
+                                account_name=stock.get("account_name")
+                            ) as _gate:
+                                _sellable = await asyncio.to_thread(_gate.is_market_open)
+                        except Exception as gate_err:  # noqa: BLE001 - see below
+                            # Unknown session state is treated as "not sellable":
+                            # keeping the position costs a cycle, destroying its
+                            # only record costs the position.
+                            logger.warning(
+                                f"{ticker} could not confirm a Toss US session "
+                                f"({gate_err}); keeping the position for the next pass"
+                            )
+                            _sellable = False
+                        if not _sellable:
+                            logger.error(
+                                f"{ticker} no Toss US session open — skipping sell "
+                                f"(position kept, rows untouched)"
+                            )
+                            continue
 
                     # Delete from holding_decisions when selling
                     await self._delete_holding_decision(ticker)
@@ -2964,6 +3007,21 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                             pass_sold_qty[ticker] = Decimal("0")
                                         available = pass_total_qty[ticker] - pass_sold_qty[ticker]
                                         sell_quantity = compute_us_fractional_sell_quantity(available, remaining_rows)
+                                        if sell_quantity is not None and Decimal(str(sell_quantity)) <= 0:
+                                            # Nothing left for this row. The broker
+                                            # refuses a zero-quantity order anyway
+                                            # (a falsy quantity used to be read as
+                                            # "sell everything", which liquidated
+                                            # the whole pyramid), and this row's DB
+                                            # record is already gone — so say so
+                                            # loudly enough to reconcile against.
+                                            logger.error(
+                                                f"{ticker} split leaves 0 shares for this row "
+                                                f"(available {available}, rows {remaining_rows}); "
+                                                f"no order sent — RECONCILE: the holdings row is "
+                                                f"already deleted while the dust remains at the broker"
+                                            )
+                                            raise _SkipOrderForRow(ticker)
                                         pass_sold_qty[ticker] += sell_quantity
                                         logger.info(
                                             f"{ticker} pyramiding fractional sell: {sell_quantity} shares "
@@ -2989,8 +3047,14 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                         limit_price=current_price,
                                         reason=sell_reason,
                                     )
+                                    # Instrument passed positionally, per BrokerPort:
+                                    # KIS spells it `ticker`, Toss `stock_code`, so a
+                                    # keyword here reached only one of them (every Toss
+                                    # US order died on TypeError, after this row was
+                                    # already deleted). Only the FIRST argument is
+                                    # positional — KIS US takes `exchange` second.
                                     trade_result = await trading.execute_sell(
-                                        ticker=ticker,
+                                        ticker,
                                         limit_price=current_price,
                                         quantity=sell_quantity,
                                         intent=order_intent,
@@ -3009,6 +3073,18 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     logger.info(f"Actual sell successful: {trade_result['message']}")
                                 else:
                                     logger.error(f"Actual sell failed: {trade_result['message']}")
+                                    # An explicitly refused order (closed session,
+                                    # shut fractional window) never left the broker,
+                                    # so it must not count against the snapshot the
+                                    # final row sweeps — otherwise that row asks for
+                                    # less than is held and the remainder is stranded.
+                                    # Deliberately NOT done for OrderOutcomeUnknown
+                                    # below: the shares may well be sold, and
+                                    # under-selling beats double-selling.
+                                    if sell_quantity is not None and ticker in pass_sold_qty:
+                                        pass_sold_qty[ticker] -= sell_quantity
+                            except _SkipOrderForRow:
+                                pass  # already logged, and nothing was accumulated
                             except OrderOutcomeUnknown as trade_err:
                                 self._link_position_exit_intent(
                                     legacy_holding_id=closed_legacy_ids[0],
@@ -3533,8 +3609,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                         account_name=account["name"],
                                         db_path=self.db_path,
                                     ) as trading:
+                                        # Positional instrument — see the sell path.
                                         trade_result = await trading.execute_buy(
-                                            ticker=ticker,
+                                            ticker,
                                             buy_amount=entry_cash_amount,
                                             limit_price=current_price,
                                             intent=order_intent,

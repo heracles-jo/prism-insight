@@ -298,8 +298,16 @@ def _neutral_broker_env(monkeypatch):
 
 
 def _reset_market_data_chain():
+    """Drop the cached source chain, if this suite can even see it.
+
+    Currently it cannot: prism-us sits ahead of the project root on sys.path,
+    so `cores` resolves to prism-us/cores, which has no market_data submodule.
+    The narrow except records that rather than hiding it — a broader one also
+    swallowed real failures. No US test reaches the root chain today; this
+    starts working on its own once the cores shadowing is resolved.
+    """
     try:
         from cores.market_data import set_default_chain
-    except Exception:  # noqa: BLE001 - market data is optional for most tests
+    except ModuleNotFoundError:
         return
     set_default_chain(None)

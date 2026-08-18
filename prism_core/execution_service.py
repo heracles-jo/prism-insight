@@ -606,7 +606,7 @@ class ExecutionService:
         )
 
 
-    def _declare_stance_sync(self, side: str, kwargs: dict) -> None:
+    def _declare_stance_sync(self, side: str, kwargs: dict, args: tuple = ()) -> None:
         """Stance 에 판단을 선언한다. **매매를 막지 않는 것이 최우선이다.**
 
         - 주문 전에 호출한다. 사후 성과가 아니라 당시 판단을 기록한다.
@@ -617,7 +617,16 @@ class ExecutionService:
         if reporter is None or not getattr(reporter, "enabled", False):
             return
 
-        symbol = kwargs.get("stock_code") or kwargs.get("symbol")
+        # BrokerPort passes the instrument positionally because the brokers
+        # spell it differently (`stock_code` on KIS domestic and Toss, `ticker`
+        # on KIS overseas). Reading only the keyword forms meant every US call
+        # declared nothing at all; args[0] is the contractual location.
+        symbol = (
+            kwargs.get("stock_code")
+            or kwargs.get("symbol")
+            or kwargs.get("ticker")
+            or (args[0] if args else None)
+        )
         if not symbol:
             return
 
@@ -647,9 +656,9 @@ class ExecutionService:
         except Exception:
             logger.warning("Stance declaration failed (%s %s)", side, symbol, exc_info=True)
 
-    async def _declare_stance(self, side: str, kwargs: dict) -> None:
+    async def _declare_stance(self, side: str, kwargs: dict, args: tuple = ()) -> None:
         """블로킹 선언 I/O를 이벤트 루프 밖에서 실행한다."""
-        await asyncio.to_thread(self._declare_stance_sync, side, kwargs)
+        await asyncio.to_thread(self._declare_stance_sync, side, kwargs, args)
 
     async def execute_buy(
         self,
@@ -661,7 +670,7 @@ class ExecutionService:
             self._active_trader.async_buy_stock,
             *args,
             intent=intent,
-            before_order=lambda: self._declare_stance("BUY", kwargs),
+            before_order=lambda: self._declare_stance("BUY", kwargs, args),
             **kwargs,
         )
 
@@ -675,7 +684,7 @@ class ExecutionService:
             self._active_trader.async_sell_stock,
             *args,
             intent=intent,
-            before_order=lambda: self._declare_stance("SELL", kwargs),
+            before_order=lambda: self._declare_stance("SELL", kwargs, args),
             **kwargs,
         )
 
@@ -692,7 +701,7 @@ class ExecutionService:
             intent=intent,
             reservation=reservation,
             side="BUY",
-            before_order=lambda: self._declare_stance("BUY", kwargs),
+            before_order=lambda: self._declare_stance("BUY", kwargs, args),
             **kwargs,
         )
 
@@ -709,7 +718,7 @@ class ExecutionService:
             intent=intent,
             reservation=reservation,
             side="SELL",
-            before_order=lambda: self._declare_stance("SELL", kwargs),
+            before_order=lambda: self._declare_stance("SELL", kwargs, args),
             **kwargs,
         )
 

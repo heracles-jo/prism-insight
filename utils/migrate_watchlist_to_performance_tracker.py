@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import os
 import sqlite3
 import json
 import glob
@@ -105,19 +106,17 @@ def simplify_trigger_type(trigger_type: str) -> str:
 
 
 def get_db_path() -> Path:
-    """Get database path"""
-    # Try relative path first
-    db_path = Path("stock_tracking_db.sqlite")
-    if db_path.exists():
-        return db_path
+    """Get database path — see utils/backfill_trigger_type.get_db_path.
 
-    # Try from project root
-    project_root = Path(__file__).parent.parent
-    db_path = project_root / "stock_tracking_db.sqlite"
-    if db_path.exists():
-        return db_path
-
-    raise FileNotFoundError("Database not found")
+    CWD-first resolution is deliberately absent: it could migrate an orphan
+    database left by an older cron while the repo-root one the agents read
+    stayed untouched.
+    """
+    override = os.getenv("STOCK_TRACKING_DB")
+    db_path = Path(override) if override else Path(__file__).resolve().parents[1] / "stock_tracking_db.sqlite"
+    if not db_path.exists():
+        raise FileNotFoundError(f"Database not found: {db_path}")
+    return db_path
 
 
 def get_traded_tickers(conn: sqlite3.Connection) -> dict:

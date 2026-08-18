@@ -17,7 +17,9 @@ import sqlite3
 import json
 import argparse
 import logging
+import os
 from datetime import datetime
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 # Setup logging
@@ -272,8 +274,9 @@ def main():
     )
     parser.add_argument(
         '--db-path',
-        default='stock_tracking_db.sqlite',
-        help='Path to SQLite database (default: stock_tracking_db.sqlite)'
+        default=os.getenv('STOCK_TRACKING_DB')
+        or str(Path(__file__).resolve().parents[1] / 'stock_tracking_db.sqlite'),
+        help='Path to SQLite database (default: %(default)s)'
     )
     parser.add_argument(
         '--dry-run',

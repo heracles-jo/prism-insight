@@ -31,7 +31,15 @@ def _load_root_kis_auth_module():
 
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        # Mirror importlib's own cleanup. kis_auth.py opens kis_devlp.yaml while
+        # executing, so on a Toss-only install this raises — and a cached
+        # half-initialized shell would hand every later caller an AttributeError
+        # instead of the real, actionable error.
+        sys.modules.pop(module_name, None)
+        raise
     return module
 
 
@@ -55,7 +63,15 @@ def _load_root_broker_settings():
 
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        # Mirror importlib's own cleanup. kis_auth.py opens kis_devlp.yaml while
+        # executing, so on a Toss-only install this raises — and a cached
+        # half-initialized shell would hand every later caller an AttributeError
+        # instead of the real, actionable error.
+        sys.modules.pop(module_name, None)
+        raise
     return module
 
 

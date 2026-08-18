@@ -61,8 +61,10 @@ def _db_path() -> str:
     """Resolve the tracking DB path (project root / stock_tracking_db.sqlite).
 
     This file lives at ``cores/llm/features/trade_history.py``; the project root
-    is three directories up. Falls back to the CWD-relative name (matching the
-    tracking agents' default) if that path does not exist.
+    is three directories up. ``STOCK_TRACKING_DB`` overrides it, matching the
+    tracking agents and seller tools. There is deliberately no CWD-relative
+    fallback: one meant a cron started elsewhere silently read (or created) a
+    different, empty database.
     """
     override = os.getenv("STOCK_TRACKING_DB")
     if override:

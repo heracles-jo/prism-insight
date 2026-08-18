@@ -200,6 +200,53 @@ def test_the_configured_buy_amount_reaches_the_order_path():
     assert callers, "settings.buy_amount() is dead code: no production caller"
 
 
+# ── The instrument argument must travel positionally ─────────────────────────
+
+# BrokerPort passes the instrument positionally precisely because the brokers
+# spell it differently: `stock_code` on KIS domestic and on Toss (both markets),
+# `ticker` on KIS overseas. A keyword therefore binds on one broker and raises
+# TypeError on the other. The KR sites below happen to work — both their
+# brokers say `stock_code` — and are frozen rather than churned; the US sites
+# did not, and every Toss US order died before reaching the broker.
+KNOWN_KEYWORD_INSTRUMENT = {
+    "stock_tracking_agent.py",           # stock_code=, KIS+Toss agree — Phase 6
+    "stock_tracking_enhanced_agent.py",  # stock_code=, ditto
+}
+
+
+def test_order_calls_pass_the_instrument_positionally():
+    hits = set()
+    for path, lineno, _text in _git_grep(r"execute_(buy|sell|pre_reserved_(buy|sell))\("):
+        source = (REPO_ROOT / path).read_text(encoding="utf-8").splitlines()
+        # The instrument is the first argument, so it is on the next line in
+        # this codebase's multi-line call style.
+        following = source[lineno] if lineno < len(source) else ""
+        if re.match(r"\s*(ticker|stock_code|symbol)\s*=", following):
+            hits.add(Path(path).name)
+
+    _assert_frozen(hits, KNOWN_KEYWORD_INSTRUMENT, set(),
+                   "keyword instrument argument")
+
+
+def test_both_adapters_accept_the_instrument_positionally():
+    """The other half: an adapter must not make its first parameter keyword-only."""
+    import inspect
+
+    from trading.brokers.kis_adapter import KisBroker
+    from trading.brokers.toss.adapter import TossBroker
+
+    for broker in (TossBroker, KisBroker):
+        for method in ("async_buy_stock", "async_sell_stock"):
+            params = list(inspect.signature(getattr(broker, method)).parameters.values())
+            first = params[1]  # [0] is self
+            # A named parameter or a *args passthrough both accept a positional
+            # instrument; keyword-only would not, and that is what this forbids.
+            assert first.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.VAR_POSITIONAL,
+            ), f"{broker.__name__}.{method} cannot take the instrument positionally"
+
+
 def test_trading_settings_serves_the_broker_trading_keys():
     """Baseline that must hold today: trading_settings() answers the three keys
     entry points need, from the broker file or from defaults."""
