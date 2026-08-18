@@ -188,10 +188,34 @@ class KRDataEnricher:
         if KRDataEnricher._semaphore is None:
             KRDataEnricher._semaphore = asyncio.Semaphore(5)
         self._trading = None
+        # Set once the broker has been consulted, so the notice below is said
+        # once per enricher rather than once per ticker — this class runs five
+        # fetches concurrently.
+        self._checked_broker = False
 
     def _get_trading(self):
-        """Lazy-init DomesticStockTrading in demo mode."""
-        if self._trading is None:
+        """Lazy-init DomesticStockTrading in demo mode.
+
+        KIS-only: the daily-chart call this feeds is a KIS API (FHKST03010100)
+        and reads KIS response shapes. Under any other broker it returns None
+        and enrichment is simply unavailable — stated once rather than
+        swallowed as a generic init failure, which is what a Toss install used
+        to see.
+        """
+        if self._trading is None and not self._checked_broker:
+            self._checked_broker = True
+            try:
+                from trading.brokers.settings import selected_broker, KIS
+
+                broker = selected_broker()
+            except Exception as e:  # noqa: BLE001 - an unreadable broker is not KIS
+                logger.warning(f"브로커 설정 확인 실패({e}) — KR 아카이브 보강 비활성")
+                return None
+            if broker != KIS:
+                logger.warning(
+                    f"KR 아카이브 보강은 KIS 전용입니다 — broker={broker}에서는 건너뜁니다"
+                )
+                return None
             try:
                 from trading.domestic_stock_trading import DomesticStockTrading  # type: ignore[import]
                 self._trading = DomesticStockTrading(mode="demo")

@@ -64,12 +64,13 @@ DEVLP_ALLOWED = {
     "trading/domestic_stock_trading.py",
     "prism-us/trading/us_stock_trading.py",
     "trading/brokers/settings.py",
+    # Declared KIS-only in Phase 3: it refuses to start under another broker
+    # (see BROKER SUPPORT in its docstring), so reading the KIS config is what
+    # it is for rather than a broker assumption leaking out.
+    "examples/messaging/gcp_pubsub_subscriber_example.py",
 }
 
-KNOWN_DEVLP_OFFENDERS = {
-    "examples/generate_dashboard_json.py",                  # Phase 3 — mode via trading_settings()
-    "examples/messaging/gcp_pubsub_subscriber_example.py",  # Phase 3 — subscriber decision
-}
+KNOWN_DEVLP_OFFENDERS: set[str] = set()
 
 
 def test_no_new_direct_reads_of_the_kis_config_file():
@@ -103,14 +104,16 @@ SHAPE_ALLOWED = {
     "trading/brokers/kis_adapter.py",
     "cores/kis_market_snapshot.py",
     "cores/market_data/kis_source.py",
+    # Both gated on the broker in Phase 3: they return early under anything but
+    # KIS, so the KIS field names below that gate are their own vocabulary.
+    "cores/archive/data_enricher.py",
+    "tools/check_kr_pending_readiness.py",
 }
 
 KNOWN_SHAPE_OFFENDERS = {
-    "cores/archive/data_enricher.py",       # Phase 3 — KIS-direct enricher
-    "prism_core/order_intents.py",          # Phase 6 — deliberate dual-shape (rt_cd|code)
-    "prism_core/stance_adapter.py",         # Phase 6 — with order_intents
-    "tools/check_kr_pending_readiness.py",  # Phase 3 — reads KIS rows unguarded
-    "tools/fill_chaser.py",                 # Phase 5 — with the BrokerPort gap below
+    "prism_core/order_intents.py",   # Phase 6 — deliberate dual-shape (rt_cd|code)
+    "prism_core/stance_adapter.py",  # Phase 6 — with order_intents
+    "tools/fill_chaser.py",          # Phase 5 — with the BrokerPort gap below
 }
 
 

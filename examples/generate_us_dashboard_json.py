@@ -39,7 +39,7 @@ TRADING_DIR = PROJECT_ROOT / "trading"
 # the root trading/ package (which exposes kis_auth) and cause:
 #   ImportError: cannot import name 'kis_auth' from 'trading'
 #   (.../prism-us/trading/__init__.py)
-# USStockTrading is loaded via importlib.util below to avoid the namespace clash.
+# Nothing here loads a broker module directly any more; the factory does it.
 sys.path.insert(0, str(SCRIPT_DIR))  # examples/ folder (for translation_utils)
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -51,24 +51,23 @@ except ImportError:
     YFINANCE_AVAILABLE = False
     logger.warning("yfinance not installed. Market index data will be unavailable.")
 
-# KIS US Stock Trading import.
-# Loaded via importlib.util from an explicit path so prism-us/trading/__init__.py
-# does NOT get registered as the top-level `trading` package — see comment above.
-USStockTrading = None
-KIS_US_AVAILABLE = False
-try:
-    import importlib.util as _ilu
-    _us_trading_path = PRISM_US_DIR / "trading" / "us_stock_trading.py"
-    if _us_trading_path.exists():
-        _spec = _ilu.spec_from_file_location("prism_us_stock_trading", _us_trading_path)
-        _us_trading_module = _ilu.module_from_spec(_spec)
-        _spec.loader.exec_module(_us_trading_module)
-        USStockTrading = _us_trading_module.USStockTrading
-        KIS_US_AVAILABLE = True
-    else:
-        logger.warning(f"prism-us trading module not found at {_us_trading_path}.")
-except Exception as exc:
-    logger.warning(f"KIS US Stock Trading module not available: {exc}. Real portfolio will be empty.")
+def _live_us_trading_available() -> bool:
+    """Can the configured broker give us a US trader?
+
+    Mirrors `_live_trading_available` in the KR dashboard. What this replaces
+    loaded `prism-us/trading/us_stock_trading.py` by path at module scope and
+    used "did that succeed?" to gate the factory call below — so it asked about
+    KIS specifically, and a Toss install rendered an empty portfolio even though
+    `us_trader()` would have answered. Loading it also dragged in `kis_auth`,
+    which reads `kis_devlp.yaml` on import.
+    """
+    try:
+        from trading.brokers.factory import us_trader  # noqa: F401
+
+        return True
+    except Exception as exc:  # noqa: BLE001 - any failure means no live data
+        logger.warning(f"Live US trading data unavailable: {exc}")
+        return False
 
 # Translation utility import (after path setup)
 try:
@@ -162,8 +161,8 @@ class USDashboardDataGenerator:
 
     def get_kis_us_trading_data(self) -> Dict[str, Any]:
         """Get real trading data from KIS US Stock API"""
-        if not KIS_US_AVAILABLE:
-            logger.warning("KIS US Stock Trading API not available.")
+        if not _live_us_trading_available():
+            logger.warning("US trading data unavailable for the configured broker.")
             return {"portfolio": [], "account_summary": {}}
 
         try:

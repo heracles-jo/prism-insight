@@ -220,9 +220,7 @@ def _loads_kis_by_path(call: ast.Call) -> bool:
 # Frozen list of current offenders — do not add to it. Each entry names the
 # migration-audit phase that removes it; a fixed file left in this set fails
 # the stale check below, which is what forces the list to shrink.
-KNOWN_PATH_LOAD_OFFENDERS = {
-    "examples/generate_us_dashboard_json.py",  # Phase 3 (KIS_US_AVAILABLE gate)
-}
+KNOWN_PATH_LOAD_OFFENDERS: set[str] = set()
 
 
 def test_no_module_scope_kis_load_by_file_path():
@@ -317,18 +315,10 @@ def _probe_import(module: str, *, us_path: bool = False) -> subprocess.Completed
     )
 
 
-# Known offender, frozen (migration audit Phase 1): with a leftover
-# kis_devlp.yaml present, this module's module-scope path load of
-# us_stock_trading succeeds and drags kis_auth in under its alias — which the
-# census's old single-key check could not see. Only this leftover-config case
-# fails; with no config at all the load fails into its except and the module
-# imports clean, so the mark lives here and not on ENTRY_POINTS.
-_LEFTOVER_CONFIG_XFAIL = {
-    "examples.generate_us_dashboard_json": (
-        "module-scope load of prism-us/trading/us_stock_trading.py registers "
-        "kis_auth when kis_devlp.yaml is present (KIS_US_AVAILABLE gate) — Phase 3"
-    ),
-}
+# Empty since Phase 3: the US dashboard's module-scope path load of
+# us_stock_trading (which dragged kis_auth in under its alias whenever a
+# leftover kis_devlp.yaml was present) is gone — it asks the factory now.
+_LEFTOVER_CONFIG_XFAIL: dict[str, str] = {}
 
 
 @pytest.mark.parametrize(

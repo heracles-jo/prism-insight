@@ -16,7 +16,6 @@ import sqlite3
 import json
 from decimal import Decimal
 import sys
-import yaml
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Any
@@ -70,14 +69,29 @@ except ImportError:
     TRANSLATION_AVAILABLE = False
     logger.warning("Translation utility not found. English translation disabled.")
 
-# Load configuration file
-CONFIG_FILE = TRADING_DIR / "config" / "kis_devlp.yaml"
-try:
-    with open(CONFIG_FILE, encoding="UTF-8") as f:
-        _cfg = yaml.load(f, Loader=yaml.SafeLoader)
-except FileNotFoundError:
-    _cfg = {"default_mode": "demo"}
-    logger.warning(f"Configuration file not found: {CONFIG_FILE}. Using default mode (demo).")
+# The trading mode used to be read straight out of `kis_devlp.yaml` here, which
+# was wrong on a Toss install twice over: the file is absent, so the mode fell
+# back to "demo" and a real-money account was labelled as simulated — and even
+# when present it describes a broker this install does not trade through.
+# `configured_mode()` answers for whichever broker is selected, and keeps
+# `PRISM_TRADING_MODE` ahead of the file, which reading the YAML could not do.
+
+
+def _configured_mode() -> str:
+    """`demo`/`real` for the configured broker, never raising.
+
+    A dashboard that cannot name the mode should still render, so a broken
+    broker configuration degrades to the safer label rather than stopping the
+    run — the same fail-soft stance `_live_trading_available` takes below.
+    """
+    try:
+        from trading.brokers.settings import configured_mode
+
+        return configured_mode()
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        logger.warning(f"Could not read the configured trading mode: {exc}. Using demo.")
+        return "demo"
+
 
 def _live_trading_available() -> bool:
     """Can the configured broker give us a domestic trader?
@@ -125,7 +139,7 @@ class DashboardDataGenerator:
         
         self.db_path = db_path
         self.output_path = output_path
-        self.trading_mode = trading_mode if trading_mode is not None else _cfg.get("default_mode", "demo")
+        self.trading_mode = trading_mode if trading_mode is not None else _configured_mode()
         self.enable_translation = enable_translation and TRANSLATION_AVAILABLE
         
         # Initialize translator
@@ -1384,7 +1398,7 @@ def main():
     
     parser = argparse.ArgumentParser(description="대시보드 JSON 생성")
     parser.add_argument("--mode", choices=["demo", "real"], 
-                       help=f"트레이딩 모드 (demo: 모의투자, real: 실전투자, 기본값: {_cfg.get('default_mode', 'demo')})")
+                       help=f"트레이딩 모드 (demo: 모의투자, real: 실전투자, 기본값: {_configured_mode()})")
     parser.add_argument("--no-translation", action="store_true",
                        help="영어 번역 비활성화 (한국어 버전만 생성)")
     

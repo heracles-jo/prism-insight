@@ -276,45 +276,78 @@ def get_market_cap_df(trade_date: str, market: str = "ALL") -> pd.DataFrame:
     return cap_df
 
 
+def _kis_snapshot_usable() -> bool:
+    """Whether a KIS snapshot attempt can plausibly succeed.
+
+    The Naver fallback below already covers failure, so this is not about
+    correctness — it is about not spending a guaranteed round-trip and a
+    warning line on every run of an install that has no KIS credentials at all.
+
+    A Toss install can still opt in by naming `kis` in
+    `PRISM_MARKET_DATA_SOURCES`, so the broker alone is not the answer.
+    """
+    try:
+        from trading.brokers.settings import selected_broker, KIS
+
+        if selected_broker() == KIS:
+            return True
+    except Exception:  # noqa: BLE001 - fall through to the source list
+        pass
+    sources = os.getenv("PRISM_MARKET_DATA_SOURCES", "")
+    return "kis" in {s.strip().lower() for s in sources.split(",") if s.strip()}
+
+
 def load_market_snapshot_bundle(trade_date: str) -> MarketSnapshotBundle:
     """Load current KIS quotes plus previous OPEN API data, or Naver fallback."""
-    try:
-        bundle = build_kis_openapi_snapshot_bundle(trade_date)
+    # Why it fell through to Naver, for the error below. "not configured" is a
+    # state, not a failure, so it is not an exception.
+    primary_exc: object = "KIS not configured"
+    if not _kis_snapshot_usable():
         logger.info(
-            "[MARKET-DATA] source=KIS+KRX_OPENAPI stocks=%d prev_date=%s cap_rows=%d",
-            len(bundle.snapshot),
-            bundle.prev_date,
-            len(bundle.cap_df),
+            "[MARKET-DATA] KIS is not configured for this install; "
+            "using the Naver snapshot directly"
         )
-        return bundle
-    except Exception as primary_exc:
-        logger.warning(
-            "[MARKET-DATA] KIS+OPENAPI bundle failed; switching to Naver fallback: %s",
-            primary_exc,
-        )
+    else:
         try:
-            bundle = fetch_naver_snapshot_bundle(
-                trade_date,
-                detail_min_amount=SCREENING_MIN_TRADE_VALUE,
+            bundle = build_kis_openapi_snapshot_bundle(trade_date)
+            logger.info(
+                "[MARKET-DATA] source=KIS+KRX_OPENAPI stocks=%d prev_date=%s cap_rows=%d",
+                len(bundle.snapshot),
+                bundle.prev_date,
+                len(bundle.cap_df),
             )
-        except Exception as naver_exc:
-            logger.error(
-                "[MARKET-DATA] both KIS+OPENAPI and Naver snapshot sources failed: "
-                "primary=%s naver=%s",
-                primary_exc,
-                naver_exc,
+            return bundle
+        except Exception as exc:
+            primary_exc = exc
+            logger.warning(
+                "[MARKET-DATA] KIS+OPENAPI bundle failed; switching to Naver fallback: %s",
+                exc,
             )
-            raise MarketSnapshotUnavailableError(
-                f"Market snapshot unavailable from KIS+OPENAPI and Naver: {naver_exc}"
-            ) from naver_exc
 
-        logger.warning(
-            "[MARKET-DATA] source=NAVER_FALLBACK stocks=%d prev_date=%s cap_rows=%d",
-            len(bundle.snapshot),
-            bundle.prev_date,
-            len(bundle.cap_df),
+    try:
+        bundle = fetch_naver_snapshot_bundle(
+            trade_date,
+            detail_min_amount=SCREENING_MIN_TRADE_VALUE,
         )
-        return bundle
+    except Exception as naver_exc:
+        logger.error(
+            "[MARKET-DATA] both KIS+OPENAPI and Naver snapshot sources failed: "
+            "primary=%s naver=%s",
+            primary_exc,
+            naver_exc,
+        )
+        raise MarketSnapshotUnavailableError(
+            f"Market snapshot unavailable from KIS+OPENAPI and Naver: {naver_exc}"
+        ) from naver_exc
+
+    logger.warning(
+        "[MARKET-DATA] source=NAVER_FALLBACK stocks=%d prev_date=%s cap_rows=%d",
+        len(bundle.snapshot),
+        bundle.prev_date,
+        len(bundle.cap_df),
+    )
+    return bundle
+
 
 def filter_low_liquidity(df: pd.DataFrame, threshold: float = 0.2) -> pd.DataFrame:
     """
