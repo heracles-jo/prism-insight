@@ -3233,6 +3233,10 @@ class StockTrackingAgent:
                             # distribute from (snapshot - already_ordered), so fills
                             # that haven't settled yet cannot cause an over-sell.
                             sell_quantity = None
+                            # Set when the split leaves this row nothing to sell:
+                            # the broker refuses a zero quantity, so sending it
+                            # would only produce a misleading generic failure.
+                            _skip_order = False
                             # Multi-row tickers sell fractionally. The FINAL row of a
                             # ticker already split THIS pass (remaining_rows==1 but
                             # ticker in pass_total_qty) must also sell from the snapshot
@@ -3248,6 +3252,20 @@ class StockTrackingAgent:
                                     pass_sold_qty[ticker] = 0
                                 available = pass_total_qty[ticker] - pass_sold_qty[ticker]
                                 sell_quantity = compute_fractional_sell_quantity(available, remaining_rows)
+                                if sell_quantity is not None and sell_quantity <= 0:
+                                    # Nothing left for this row. The broker refuses
+                                    # a zero-quantity order (a falsy quantity used
+                                    # to be read as "sell everything", which
+                                    # liquidated the whole pyramid) and this row's
+                                    # DB record is already gone, so say what needs
+                                    # reconciling instead of a generic failure.
+                                    logger.error(
+                                        f"{ticker} split leaves 0 shares for this row "
+                                        f"(available {available}, rows {remaining_rows}); "
+                                        f"no order sent — RECONCILE: the holdings row is "
+                                        f"already deleted while the shares remain at the broker"
+                                    )
+                                    _skip_order = True
                                 pass_sold_qty[ticker] += sell_quantity
                                 logger.info(
                                     f"{ticker} pyramiding fractional sell: {sell_quantity} shares "
@@ -3271,20 +3289,30 @@ class StockTrackingAgent:
                                 limit_price=current_price,
                                 reason=sell_reason,
                             )
-                            try:
-                                trade_result = await trading.execute_sell(
-                                    stock_code=ticker,
-                                    limit_price=current_price,
-                                    quantity=sell_quantity,
-                                    intent=order_intent,
-                                )
-                            except OrderOutcomeUnknown as error:
-                                self._link_position_exit_intent(
-                                    legacy_holding_id=closed_legacy_id,
-                                    account_key=stock.get("account_key"),
-                                    intent_id=error.intent_id,
-                                )
-                                raise
+                            if _skip_order:
+                                # Nothing to send; the reason was already logged
+                                # with what needs reconciling. OrderIntent.create
+                                # above is a pure constructor, so no idempotency
+                                # key was reserved for an order that never went out.
+                                trade_result = {
+                                    'success': False,
+                                    'message': 'no order sent (split left 0 shares for this row)',
+                                }
+                            else:
+                                try:
+                                    trade_result = await trading.execute_sell(
+                                        stock_code=ticker,
+                                        limit_price=current_price,
+                                        quantity=sell_quantity,
+                                        intent=order_intent,
+                                    )
+                                except OrderOutcomeUnknown as error:
+                                    self._link_position_exit_intent(
+                                        legacy_holding_id=closed_legacy_id,
+                                        account_key=stock.get("account_key"),
+                                        intent_id=error.intent_id,
+                                    )
+                                    raise
 
                             persisted_intent_id = trade_result.get("intent_id")
                             if persisted_intent_id:
@@ -3298,6 +3326,14 @@ class StockTrackingAgent:
                             logger.info(f"Actual sell successful: {trade_result['message']}")
                         else:
                             logger.error(f"Actual sell failed: {trade_result['message']}")
+                            # An explicitly refused order never left the broker, so
+                            # it must not count against the snapshot the final row
+                            # sweeps — otherwise that row asks for less than is held
+                            # and the remainder is stranded. Deliberately not done
+                            # for an unknown outcome: the shares may well be sold,
+                            # and under-selling beats double-selling.
+                            if sell_quantity is not None and ticker in pass_sold_qty:
+                                pass_sold_qty[ticker] -= sell_quantity
 
                         # Portion of this position that was actually sold, so
                         # mirroring subscribers replicate a partial (pyramiding)

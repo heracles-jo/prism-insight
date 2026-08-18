@@ -2922,6 +2922,30 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 account_name=stock.get("account_name")
                             ) as _gate:
                                 _sellable = await asyncio.to_thread(_gate.is_market_open)
+                                if _sellable:
+                                    # An open session is not enough for a
+                                    # fractional holding: Toss accepts fractional
+                                    # orders only from the regular open until an
+                                    # hour before its close, and refuses a
+                                    # sub-share position outright outside it. The
+                                    # day market (09:00–16:50 KST) is open for
+                                    # most of a Korean batch's life, so without
+                                    # this the gate waved through exactly the
+                                    # holdings it exists to protect.
+                                    _held = await asyncio.to_thread(
+                                        _gate.get_holding_quantity, ticker
+                                    )
+                                    _held_dec = Decimal(str(_held or 0))
+                                    if _held_dec != _held_dec.to_integral_value():
+                                        _sellable = await asyncio.to_thread(
+                                            _gate.fractional_window_open
+                                        )
+                                        if not _sellable:
+                                            logger.error(
+                                                f"{ticker} holds {_held_dec} shares but the "
+                                                f"Toss fractional window is shut; keeping the "
+                                                f"position for the next pass"
+                                            )
                         except Exception as gate_err:  # noqa: BLE001 - see below
                             # Unknown session state is treated as "not sellable":
                             # keeping the position costs a cycle, destroying its

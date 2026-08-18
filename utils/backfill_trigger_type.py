@@ -22,6 +22,16 @@ from pathlib import Path
 from typing import Dict, Optional
 import logging
 
+# Load .env before reading STOCK_TRACKING_DB: a fresh process does not inherit
+# it, and an install that sets the override there rather than exporting it would
+# otherwise have this tool touch a different database than the agents write to.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+except Exception:
+    pass
+
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,

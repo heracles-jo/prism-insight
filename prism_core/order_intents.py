@@ -301,25 +301,52 @@ class IntentStore:
     }
 
     def _migrate_quantity_affinity(self, conn: sqlite3.Connection) -> None:
-        for table, column in self._QUANTITY_COLUMNS.items():
-            try:
-                declared = next(
-                    (
-                        str(row[2] or "").upper()
-                        for row in conn.execute(f"PRAGMA table_info({table})")
-                        if str(row[1]) == column
-                    ),
-                    None,
-                )
-                if declared is None or declared == "TEXT":
-                    continue
-                self._rebuild_with_text_quantity(conn, table, column)
-            except Exception:  # noqa: BLE001 - see the comment above
-                logger.warning(
-                    "[ORDER_INTENT] could not widen %s.%s to TEXT; fractional "
-                    "quantities will read back as floats from that column",
-                    table, column, exc_info=True,
-                )
+        pending = [
+            (table, column)
+            for table, column in self._QUANTITY_COLUMNS.items()
+            if self._declared_type(conn, table, column) not in (None, "TEXT")
+        ]
+        if not pending:
+            return  # the common path: nothing to do, and nothing was touched
+
+        # `broker_orders` has a FOREIGN KEY into `order_intents`, and with
+        # foreign_keys ON SQLite treats DROP TABLE as an implicit DELETE and
+        # refuses it. This is SQLite's documented table-rebuild procedure.
+        # The pragma is a no-op inside a transaction, so commit first.
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            for table, column in pending:
+                try:
+                    self._rebuild_with_text_quantity(conn, table, column)
+                    conn.commit()
+                except Exception:  # noqa: BLE001 - see the comment above
+                    conn.rollback()
+                    conn.execute(f"DROP TABLE IF EXISTS {table}__new")
+                    conn.commit()
+                    logger.warning(
+                        "[ORDER_INTENT] could not widen %s.%s to TEXT; fractional "
+                        "quantities will read back as floats from that column",
+                        table, column, exc_info=True,
+                    )
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
+
+    @staticmethod
+    def _declared_type(
+        conn: sqlite3.Connection, table: str, column: str
+    ) -> str | None:
+        try:
+            return next(
+                (
+                    str(row[2] or "").upper()
+                    for row in conn.execute(f"PRAGMA table_info({table})")
+                    if str(row[1]) == column
+                ),
+                None,
+            )
+        except sqlite3.Error:
+            return None
 
     @staticmethod
     def _rebuild_with_text_quantity(

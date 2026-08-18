@@ -49,6 +49,16 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+# Load .env before reading STOCK_TRACKING_DB: a fresh cron process does not
+# inherit it, and an install that sets the override there (rather than exporting
+# it) would otherwise have this job compress a different database than the
+# agents write to — the split this anchoring exists to prevent.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except Exception:
+    pass
+
 # Same resolution chain as the tracking agents and seller tools:
 # STOCK_TRACKING_DB override first, then anchored to this file, never the CWD.
 DEFAULT_DB_PATH = os.getenv("STOCK_TRACKING_DB") or str(

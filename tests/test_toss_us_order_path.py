@@ -93,6 +93,64 @@ def test_whole_share_counts_stay_integers(tmp_path):
     assert _intent(None).quantity is None
 
 
+def test_the_migration_survives_a_populated_child_table(tmp_path):
+    """broker_orders holds a FOREIGN KEY into order_intents, and _connect turns
+    foreign_keys ON — under which SQLite refuses DROP TABLE outright. Without
+    the documented rebuild procedure the migration failed on every real
+    database, left a stale __new copy behind, and re-ran on every open."""
+    path = tmp_path / "legacy.sqlite"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE order_intents (
+            id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE,
+            market TEXT NOT NULL, account_id TEXT NOT NULL, symbol TEXT NOT NULL,
+            side TEXT NOT NULL, order_style TEXT NOT NULL, quantity INTEGER,
+            cash_amount TEXT, limit_price TEXT, reason TEXT, source TEXT NOT NULL,
+            source_decision_id TEXT, source_position_id TEXT,
+            execution_mode TEXT NOT NULL, status TEXT NOT NULL, error_type TEXT,
+            error_message TEXT, raw_request_json TEXT NOT NULL,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL, submitted_at TEXT)"""
+    )
+    conn.execute(
+        """CREATE TABLE broker_orders (
+            id TEXT PRIMARY KEY, intent_id TEXT NOT NULL, broker TEXT NOT NULL,
+            broker_order_id TEXT, accepted INTEGER NOT NULL, status TEXT NOT NULL,
+            submitted_quantity INTEGER, submitted_price TEXT, raw_code TEXT,
+            raw_message TEXT, raw_response_json TEXT NOT NULL,
+            submitted_at TEXT NOT NULL,
+            FOREIGN KEY(intent_id) REFERENCES order_intents(id))"""
+    )
+    conn.execute(
+        "INSERT INTO order_intents VALUES ('i1','k','US','a','AAPL','SELL',"
+        "'market',1,NULL,NULL,NULL,'s',NULL,'p','live','CREATED',NULL,NULL,"
+        "'{}','t','t',NULL)"
+    )
+    conn.execute(
+        "INSERT INTO broker_orders VALUES "
+        "('b1','i1','toss','X',1,'SUBMITTED',1,'10',NULL,NULL,'{}','t')"
+    )
+    conn.commit()
+    conn.close()
+
+    IntentStore(path)
+
+    conn = sqlite3.connect(path)
+    tables = {
+        row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    assert "order_intents__new" not in tables, "stale rebuild copy left behind"
+    for table, column in (("order_intents", "quantity"),
+                          ("broker_orders", "submitted_quantity")):
+        declared = [
+            row[2] for row in conn.execute(f"PRAGMA table_info({table})")
+            if row[1] == column
+        ]
+        assert declared == ["TEXT"], f"{table}.{column} was not widened"
+    assert conn.execute("SELECT id FROM order_intents").fetchall() == [("i1",)]
+    assert conn.execute("SELECT id FROM broker_orders").fetchall() == [("b1",)]
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
 def test_a_legacy_integer_column_is_widened_without_losing_rows(tmp_path):
     """Databases predating fractional shares declare quantity INTEGER."""
     path = tmp_path / "legacy.sqlite"
