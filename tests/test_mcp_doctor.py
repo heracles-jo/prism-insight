@@ -257,3 +257,53 @@ class TestLaunchCheck:
 
         assert "Traceback" not in result["detail"]
         assert len(result["detail"].splitlines()) == 1
+
+
+class TestConfigRoles:
+    """The agent path config is in use, and the tool used to say otherwise.
+
+    It advised deleting `mcp_agent.config.yaml` as a leftover. Only the report
+    path migrated to the native registry; mcp-agent still reads that file for
+    the analysis agents — company info, macro, news, the buy and sell
+    specialists — and a batch log showed 25 references to it. Following the
+    advice would have taken all of them out.
+
+    These assert on wording and on which keys exist, never on values: the tool
+    reads the real registry, so anything tied to a particular host's
+    configuration would fail on somebody else's machine.
+    """
+
+    def _text(self, capsys):
+        from tools.mcp_doctor import main
+
+        main([])
+        return capsys.readouterr().out
+
+    def _json(self, capsys):
+        import json
+
+        from tools.mcp_doctor import main
+
+        main(["--json"])
+        return json.loads(capsys.readouterr().out)
+
+    def test_the_output_never_advises_deleting_a_config(self, capsys):
+        assert "delete" not in self._text(capsys).lower()
+
+    def test_each_config_is_named_with_what_reads_it(self, capsys):
+        out = self._text(capsys)
+
+        assert "report path" in out
+        assert "agent path" in out
+
+    def test_the_json_keeps_the_keys_other_hosts_are_diffed_on(self, capsys):
+        """Comparing hosts is the point; renaming a key breaks the comparison."""
+        config = self._json(capsys)["config"]
+
+        assert {"native", "native_exists", "legacy", "legacy_exists"} <= set(config)
+
+    def test_the_json_says_what_reads_each_file(self, capsys):
+        config = self._json(capsys)["config"]
+
+        assert "report" in config["native_role"]
+        assert "agent" in config["legacy_role"]
