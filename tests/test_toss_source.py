@@ -250,6 +250,39 @@ def test_investor_flows_use_the_exchange_column_names():
     assert frame.loc[pd.Timestamp("2026-08-14"), "외국인합계"] == -319700
 
 
+def test_flow_requests_stay_within_the_api_count_limit():
+    """Toss 400s on count > 100 for investor trading, and 400 reads as no data.
+
+    The candle endpoint takes 200, so sharing one page-size constant sent 200
+    here too and every flow lookup failed. The chain then reported that no
+    source could answer, which is indistinguishable from a stock nobody traded.
+    """
+    source, client = make_source({
+        "/api/v1/stocks/005930/investor-trading": {
+            "records": [flow_record("2026-08-18")], "nextUntil": None,
+        },
+    })
+
+    source.investor_flows("005930", "20260818", "20260818")
+
+    counts = [params["count"] for _method, _path, params in client.calls]
+    assert counts, "no request was made"
+    # Compared against the literal, not the constant: reverting the constant
+    # must fail this test rather than move the goalposts with it.
+    assert max(counts) <= 100
+
+
+def test_candle_requests_still_use_the_larger_page():
+    """Splitting the constant must not quietly halve candle throughput."""
+    source, client = make_source({
+        "/api/v1/candles": {"candles": candles(["2026-08-18"]), "nextBefore": None},
+    })
+
+    source.price_history("005930", "20260818", "20260818")
+
+    assert [params["count"] for _method, _path, params in client.calls] == [200]
+
+
 def test_a_provisional_same_day_record_is_excluded_from_history():
     """Its nulls would read as a day of no institutional activity."""
     source, _ = make_source({

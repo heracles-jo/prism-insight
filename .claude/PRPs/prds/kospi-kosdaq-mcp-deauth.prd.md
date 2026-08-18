@@ -183,7 +183,7 @@ mcp_agent.config.yaml (env 없음)
 
 | # | Phase | Description | Status | Parallel | Depends | PRP Plan |
 |---|-------|-------------|--------|----------|---------|----------|
-| 1 | 수급 페이지 크기 수정 | `_PAGE` 를 엔드포인트별로 분리, 수급 100 | in-progress | with 2 | - | [plan](../plans/toss-investor-flow-page-size.plan.md) |
+| 1 | 수급 페이지 크기 수정 | `_PAGE` 를 엔드포인트별로 분리, 수급 100 | complete | with 2 | - | [plan](../plans/completed/toss-investor-flow-page-size.plan.md) |
 | 2 | MCP 서버 전환 | config 를 자체 서버로, 자격증명 제거, 전수 검증 | pending | with 1 | - | - |
 | 3 | 섹터 capability 신설 | 네이버 소스 + 체인 capability + `get_sector_info` | pending | - | 2 | - |
 | 4 | 조용한 실패 제거 | 도구 실패가 눈에 띄게, 회귀 고정 | pending | - | 1, 2, 3 | - |
