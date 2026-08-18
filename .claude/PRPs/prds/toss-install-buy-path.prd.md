@@ -96,7 +96,7 @@ We'll know we're right when **`PRISM_BROKER=toss` 에 KIS·KRX 자격증명이 �
 
 - [ ] **`helpers.py` 의 1순위(KRX 전 종목 스냅샷)를 어떻게 할 것인가?** 폴백만 고치면 KRX 가 살아 있는 설치는 지금과 같고 토스 설치는 폴백으로 돈다. 1순위 자체를 체인으로 바꾸면 KIS 사용자의 동작이 바뀐다 — 범위 판단 필요
 - [ ] **오류 130건이 전부 이 원인인가?** 보고는 `Connection closed` 만 남았다고 했다. 인터프리터를 고친 뒤 재실행해야 나머지가 있는지 알 수 있다
-- [ ] `mcp_agent.config.yaml` 은 gitignore 대상이라 **커밋으로 고칠 수 없다.** `.example` 과 문서, 그리고 진단으로만 유도할 수 있는데 그것으로 충분한가
+- [x] ~~`mcp_agent.config.yaml` 은 커밋으로 못 고친다~~ — **진단이 잡는 것으로 충분하다.** Phase 3 이후 잘못된 인터프리터가 `CANNOT_IMPORT` 로 FAIL 하므로, `.example`·문서를 못 읽었더라도 `mcp_doctor` 한 번이면 드러난다. 실측: `python3` 로 두면 unhealthy 1, 절대경로면 0
 
 ---
 
@@ -182,8 +182,8 @@ When **KIS·KRX 계정 없이 아침 배치를 돌릴 때**, I want to **현재�
 |---|-------|-------------|--------|----------|---------|----------|
 | 1 | 현재가 조회를 브로커 인식으로 | `helpers.py` 폴백을 팩토리 + 체인으로 | complete | with 2 | - | [plan](../plans/completed/broker-aware-price-lookup.plan.md) |
 | 2 | 거짓 안내 제거 | `mcp_doctor` 가 레거시 삭제를 권하지 않음 | complete | with 1 | - | [plan](../plans/completed/mcp-doctor-legacy-note.plan.md) |
-| 3 | 레거시 설정도 진단 대상으로 | 인터프리터 검사를 `mcp_agent.config.yaml` 에 | pending | - | 2 | - |
-| 4 | 설정 안내 | `.example`·문서에 절대경로와 이유 | pending | - | 3 | - |
+| 3 | 레거시 설정도 진단 대상으로 | 인터프리터 검사를 `mcp_agent.config.yaml` 에 | complete | - | 2 | - |
+| 4 | 설정 안내 | `.example`·문서에 절대경로와 이유 | complete | - | 3 | - |
 
 ### Phase Details
 

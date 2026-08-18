@@ -226,7 +226,25 @@ PERPLEXITY_API_KEY=...
 > 리포트에서 해당 섹션이 조용히 비는 것뿐입니다.
 
 `mcp_agent.config.yaml`은 `${VAR}` 치환을 지원하지 않으므로 위 환경변수가 듣지
-않습니다. 그쪽 인터프리터를 바꾸려면 `command` 값을 파일에 직접 적으십시오.
+않습니다. 그쪽 인터프리터는 `command` 에 **절대경로로 직접** 적으십시오.
+
+```yaml
+    kospi_kosdaq:
+      command: "/absolute/path/to/prism-insight/.venv/bin/python"
+      args: ["-m", "cores.market_data.mcp_server"]
+```
+
+> ⚠️ `"python3"` 로 두면 PATH가 가리키는 아무 인터프리터나 잡힙니다. 시스템
+> `python3`가 3.9인 호스트에는 `mcp` 패키지가 없어 서버가 기동 직후 죽고,
+> mcp-agent는 이를 `Connection closed` 로만 보고합니다. 실제 사례에서 배치가
+> **오류 130건에 산출물 0건**으로 끝났고 로그만 봐서는 원인을 알 수 없었습니다.
+
+설정 후 다음으로 확인하십시오 — 두 설정 파일을 모두 검사하며, 지정한 인터프리터가
+서버를 실제로 띄울 수 있는지까지 봅니다.
+
+```bash
+python tools/mcp_doctor.py
+```
 
 ### 6단계: Playwright 설치 (PDF 생성용)
 

@@ -43,7 +43,18 @@ mcp:
       # lacks `mcp`. Note that mcp-agent does NOT expand ${VAR:-default} here
       # (measured), so this cannot be made configurable the way
       # cores/llm/mcp_servers.yaml does it; set PATH or edit this line.
-      command: "python3"
+      # command: mcp-agent does NOT expand ${VAR} here (measured), so this
+      # cannot be made configurable the way cores/llm/mcp_servers.yaml is —
+      # write the interpreter path in directly.
+      #
+      # ⚠️  This server imports repo code, so it needs the interpreter that has
+      #     the repo's dependencies. A bare "python3" is whatever PATH resolves
+      #     to, and a host whose system python3 is 3.9 has no `mcp` at all: the
+      #     server dies at launch, mcp-agent reports only "Connection closed",
+      #     and a batch produces 130 errors and no output. Use an absolute path.
+      #
+      #     Check it with: python tools/mcp_doctor.py
+      command: "/absolute/path/to/prism-insight/.venv/bin/python"
       args:
         [
           "-m",

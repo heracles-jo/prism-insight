@@ -307,3 +307,44 @@ class TestConfigRoles:
 
         assert "report" in config["native_role"]
         assert "agent" in config["legacy_role"]
+
+
+class TestAgentPathIsInspected:
+    """The agent path config was never looked at, and its servers were dying.
+
+    `load_mcp_registry` prefers the native registry and only falls back to this
+    file when native is absent, so on a normal install nothing inspected it.
+    Meanwhile mcp-agent was reading it for every analysis agent. A host whose
+    `python3` could not import `mcp` produced 130 errors and no output, and the
+    diagnostic reported everything healthy because it had never looked there.
+    """
+
+    def _servers(self, capsys, label):
+        import json
+
+        from tools.mcp_doctor import main
+
+        main(["--json"])
+        payload = json.loads(capsys.readouterr().out)
+        return payload["registries"].get(label)
+
+    def test_the_agent_path_is_inspected_without_a_flag(self, capsys):
+        """Behind --all it would stay unseen on the runs that matter."""
+        assert self._servers(capsys, "agent") is not None
+
+    def test_it_reads_the_agent_file_rather_than_whatever_the_loader_prefers(
+        self, capsys
+    ):
+        from cores.llm import config_loader
+
+        data = self._servers(capsys, "agent")
+
+        assert data["source"] == str(config_loader._LEGACY_CONFIG)
+
+    def test_a_python_server_there_gets_its_interpreter_checked(self, capsys):
+        """The check that would have caught the reported outage."""
+        data = self._servers(capsys, "agent")
+        launched = [s for s in data["servers"] if s.get("launch")]
+
+        assert launched, "no server in the agent config had its launch checked"
+        assert all("module" in s["launch"] for s in launched)

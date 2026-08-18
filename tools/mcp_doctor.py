@@ -216,6 +216,10 @@ def _resolve_config_path(label: str) -> Path | None:
     correct — so if the loader's precedence changes, change it here too.
     """
 
+    if label == "agent":
+        # Always this file: it is what mcp-agent reads, regardless of what the
+        # loader's search order would prefer.
+        return config_loader._LEGACY_CONFIG
     if label == "report":
         override = os.environ.get("REPORT_MCP_CONFIG")
         if override:
@@ -228,6 +232,27 @@ def _resolve_config_path(label: str) -> Path | None:
     if config_loader._LEGACY_CONFIG.exists():
         return config_loader._LEGACY_CONFIG
     return None
+
+
+def _load_agent_registry():
+    """The agent path config, read directly rather than through the loader.
+
+    `load_mcp_registry` prefers the native registry and only falls back to this
+    file when native is absent, so on a normal install nothing ever inspects it
+    — and the servers it declares are most of a batch's MCP traffic. A host
+    whose `python3` cannot import `mcp` produced 130 errors and no output at
+    all, and the diagnostic reported everything healthy because it had never
+    looked here.
+
+    No interpolation: mcp-agent does not expand ${VAR} when it reads this file
+    (measured), so the diagnostic must see the same literal values it will.
+    """
+    from cores.llm.mcp_registry import McpServerRegistry
+
+    path = config_loader._LEGACY_CONFIG
+    if not path.exists():
+        raise FileNotFoundError(f"{path} not present")
+    return McpServerRegistry.from_yaml_dict(yaml.safe_load(path.read_text()) or {})
 
 
 def _raw_servers(path: Path | None) -> dict:
@@ -347,6 +372,10 @@ def main(argv: list[str] | None = None) -> int:
     env_source = _load_repo_env(project_root)
 
     sources = [("report", load_report_mcp_registry)]
+    if config_loader._LEGACY_CONFIG.exists():
+        # Checked by default, not behind --all: the analysis agents are the bulk
+        # of a batch, and their servers were the ones dying unseen.
+        sources.append(("agent", _load_agent_registry))
     if args.all:
         sources.append(("native", load_mcp_registry))
 
