@@ -59,55 +59,31 @@ async def get_current_stock_price(cursor, ticker: str, account_key: str | None =
     Returns:
         float: Current stock price
     """
-    import asyncio
-    from krx_data_client import get_nearest_business_day_in_a_week, get_market_ohlcv_by_ticker
-    import datetime
+    # The source chain first. It reaches KRX exactly as the hand-rolled call
+    # this replaces did, but falls through to FinanceDataReader when KRX cannot
+    # answer, and it is the one layer that notices a source has stopped
+    # answering at all. What was here called the KRX login client directly and
+    # retried it three times with 2s + 4s of backoff *before* consulting
+    # anything else — so on the production host, whose KRX login is refused,
+    # every single price lookup spent six seconds failing before reaching a
+    # source that could answer. Retrying a blipping endpoint is also the weaker
+    # answer to a blip: the chain simply asks the next source.
+    chain_price = _get_price_from_chain(ticker)
+    if chain_price > 0:
+        logger.info(f"{ticker} current price: {chain_price:,.0f} KRW")
+        return chain_price
 
-    # KRX API (data.krx.co.kr) can intermittently time out. Retry the transient
-    # fetch a few times before falling back, so a momentary blip does not silently
-    # drop a fresh buy candidate (its price is not yet in the DB, so the last-price
-    # fallback returns 0 and the whole report analysis is skipped). #289-adjacent.
-    MAX_RETRIES = 3
-    for attempt in range(MAX_RETRIES):
-        try:
-            today = datetime.datetime.now().strftime("%Y%m%d")
-            trade_date = get_nearest_business_day_in_a_week(today, prev=True)
-            logger.info(f"Target date: {trade_date}")
+    # Then a live broker quote. A new buy candidate has no stock_holdings row,
+    # so the DB fallback below returns 0 and the whole report analysis is
+    # silently skipped (the 2026-07-13 KRX outage dropped all 3 afternoon
+    # candidates; on 2026-08-18 a Toss install dropped all 3 again at the same
+    # spot, for want of the KIS credentials this used to assume).
+    broker_price = await _get_price_from_broker(ticker)
+    if broker_price > 0:
+        return broker_price
 
-            df = get_market_ohlcv_by_ticker(trade_date)
-
-            if ticker in df.index:
-                current_price = df.loc[ticker, "Close"]
-                logger.info(f"{ticker} current price: {current_price:,.0f} KRW")
-                return float(current_price)
-            else:
-                # Data fetched OK but ticker absent — retrying won't help.
-                logger.warning(f"Cannot find ticker {ticker}")
-                return _get_last_price_from_db(cursor, ticker, account_key=account_key)
-
-        except Exception as e:
-            logger.error(f"Error querying current price for {ticker} "
-                         f"(attempt {attempt + 1}/{MAX_RETRIES}): {str(e)}")
-            if attempt < MAX_RETRIES - 1:
-                wait = 2 * (attempt + 1)  # 2s, 4s exponential-ish backoff
-                logger.warning(f"{ticker} price query retry in {wait}s")
-                await asyncio.sleep(wait)
-            else:
-                logger.error(traceback.format_exc())
-                # KRX exhausted — try the broker, then the source chain, before
-                # the DB fallback. A new buy candidate has no stock_holdings row,
-                # so the DB fallback returns 0 and the whole report analysis is
-                # silently skipped (2026-07-13 KRX outage dropped all 3 afternoon
-                # candidates; on 2026-08-18 a Toss install dropped all 3 again at
-                # the same spot, for want of the KIS credentials this used to
-                # assume).
-                broker_price = await _get_price_from_broker(ticker)
-                if broker_price > 0:
-                    return broker_price
-                chain_price = _get_price_from_chain(ticker)
-                if chain_price > 0:
-                    return chain_price
-                return _get_last_price_from_db(cursor, ticker, account_key=account_key)
+    logger.warning(f"{ticker}: no market data source or broker could price it")
+    return _get_last_price_from_db(cursor, ticker, account_key=account_key)
 
 
 async def _get_price_from_broker(ticker: str) -> float:
