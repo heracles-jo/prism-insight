@@ -181,7 +181,7 @@ When **KIS·KRX 계정 없이 아침 배치를 돌릴 때**, I want to **현재�
 | # | Phase | Description | Status | Parallel | Depends | PRP Plan |
 |---|-------|-------------|--------|----------|---------|----------|
 | 1 | 현재가 조회를 브로커 인식으로 | `helpers.py` 폴백을 팩토리 + 체인으로 | complete | with 2 | - | [plan](../plans/completed/broker-aware-price-lookup.plan.md) |
-| 2 | 거짓 안내 제거 | `mcp_doctor` 가 레거시 삭제를 권하지 않음 | pending | with 1 | - | - |
+| 2 | 거짓 안내 제거 | `mcp_doctor` 가 레거시 삭제를 권하지 않음 | in-progress | with 1 | - | [plan](../plans/mcp-doctor-legacy-note.plan.md) |
 | 3 | 레거시 설정도 진단 대상으로 | 인터프리터 검사를 `mcp_agent.config.yaml` 에 | pending | - | 2 | - |
 | 4 | 설정 안내 | `.example`·문서에 절대경로와 이유 | pending | - | 3 | - |
 
