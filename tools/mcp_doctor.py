@@ -43,7 +43,10 @@ from cores.llm.config_loader import (  # noqa: E402
     load_report_mcp_registry,
 )
 
-_ENV_REF = re.compile(r"^\$\{([A-Z0-9_]+)\}$")
+# `${VAR}` and `${VAR:-default}`, the two forms the loader interpolates.
+# Matching only the first made a defaulted variable look like a literal, so
+# an intentionally-optional entry was reported as an unset credential.
+_ENV_REF = re.compile(r"^\$\{([A-Z0-9_]+)(?::-(.*))?\}$")
 # A filesystem path, as opposed to a URL, an npm package spec, or a flag.
 # Being strict here matters: this output is meant to be diffed across hosts,
 # and a false positive is indistinguishable from a real breakage.
@@ -87,12 +90,17 @@ def _check_env(spec_env: dict, raw_env: dict | None = None) -> list[dict]:
         declared = str(raw_env.get(key, resolved) or "")
         reference = _ENV_REF.match(declared)
         if reference:
-            var = reference.group(1)
+            var, default = reference.group(1), reference.group(2)
+            # A default is the author saying what to do when the variable is
+            # absent, so an unset one is a choice rather than a gap — including
+            # an empty default, which means "pass nothing and let the server
+            # decide". Flagging those buries the genuinely missing credentials
+            # this tool exists to surface.
             checked.append(
                 {
                     "key": key,
-                    "source": f"${{{var}}}",
-                    "set": bool(os.environ.get(var)),
+                    "source": f"${{{var}:-…}}" if default is not None else f"${{{var}}}",
+                    "set": bool(os.environ.get(var)) or default is not None,
                 }
             )
         else:

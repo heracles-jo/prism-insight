@@ -34,6 +34,31 @@ def _load_root_kis_auth_module():
     spec.loader.exec_module(module)
     return module
 
+
+def _load_root_broker_settings():
+    """Root `trading.brokers.settings`, loaded by path for the same reason.
+
+    `prism-us/trading/` shadows the root `trading` package once prism-us is on
+    `sys.path`, so `import trading.brokers.settings` raises ModuleNotFoundError
+    here. The module imports nothing from its own package, so loading it
+    standalone is safe.
+    """
+    module_name = "prism_root_trading_broker_settings"
+    existing_module = sys.modules.get(module_name)
+    if existing_module is not None:
+        return existing_module
+
+    module_path = PROJECT_ROOT / "trading" / "brokers" / "settings.py"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load root broker settings from {module_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 # =============================================================================
 # US-Specific Tables (us_* prefix)
 # =============================================================================
@@ -297,18 +322,26 @@ def _get_copy_columns(source_columns: list[str], target_columns: list[str]) -> l
 
 
 def _get_primary_account_scope() -> tuple[str, str, str, str]:
-    try:
-        ka = _load_root_kis_auth_module()
+    """Owner to stamp onto legacy US rows, taken from whichever broker is in use.
 
-        default_mode = str(ka.getEnv().get("default_mode", "demo")).strip().lower()
-        svr = "vps" if default_mode == "demo" else "prod"
-        primary_account = ka.resolve_account(svr=svr, market="us")
-        mode = "demo" if primary_account["svr"] == "vps" else "real"
-        return primary_account["account_key"], primary_account["name"], primary_account["product"], mode
+    Asks the broker rather than KIS, for the same reason the KR migration does:
+    a Toss install has no US account in `kis_devlp.yaml` and should not be told
+    to invent one so the migration can label rows it already owns.
+    """
+    try:
+        settings = _load_root_broker_settings()
+        return settings.primary_account_scope(
+            "us", kis_auth_loader=_load_root_kis_auth_module
+        )
     except Exception as exc:
+        try:
+            hint = _load_root_broker_settings().broker_config_hint()
+        except Exception:  # noqa: BLE001 - never let the hint hide the cause
+            hint = "Please check the configuration for the selected broker."
+
         raise RuntimeError(
             "Unable to verify the primary US account required for DB migration. "
-            "Please ensure root trading/kis_auth.py is loadable and at least one US account is configured in kis_devlp.yaml. "
+            f"{hint} "
             f"Migration aborted to prevent data orphaning. Cause: {exc}"
         ) from exc
 

@@ -30,21 +30,35 @@ sys.path.insert(0, str(TRADING_DIR))              # trading/ for local imports
 sys.path.insert(0, str(PARENT_DIR))               # project root - MUST be first for 'from trading.xxx'
 
 # Load configuration file
-CONFIG_FILE = TRADING_DIR / "config" / "kis_devlp.yaml"
-with open(CONFIG_FILE, encoding="UTF-8") as f:
-    _cfg = yaml.safe_load(f)
+# Trading settings come from whichever broker is configured, so this module no
+# longer requires kis_devlp.yaml to exist. Reading it here made the Telegram
+# report unimportable on a Toss-only install.
+from trading.brokers.settings import trading_settings
+
+_cfg = trading_settings()
 
 # Import local modules
-from trading.domestic_stock_trading import DomesticStockTrading
-from trading import kis_auth as ka
+# KIS trading modules are imported inside the methods that need them; both
+# read kis_devlp.yaml at import time.
 from telegram_bot_agent import TelegramBotAgent
 
-# Import US trading module (optional - may not be available)
-try:
-    from us_stock_trading import USStockTrading
-    US_TRADING_AVAILABLE = True
-except ImportError:
-    US_TRADING_AVAILABLE = False
+def _us_trading_available() -> bool:
+    """Can the configured broker give us a US trader?
+
+    This used to import `USStockTrading` at module scope and treat the result as
+    the answer. That was wrong twice over: it made importing this module require
+    `kis_devlp.yaml` (us_stock_trading pulls in kis_auth), and it asked about KIS
+    specifically — so a Toss install answered "no" and the portfolio report
+    silently omitted every US position, though `us_trader()` would have served
+    them. Ask the factory the real question, lazily.
+    """
+    try:
+        from trading.brokers.factory import us_trader  # noqa: F401
+
+        return True
+    except Exception as exc:  # noqa: BLE001 - any failure means no US section
+        logger.warning(f"US trading unavailable: {exc}")
+        return False
 
 # Logging configuration
 logging.basicConfig(
@@ -144,11 +158,20 @@ class PortfolioTelegramReporter:
             return f"{sign}{amount:,.0f}원" if amount else "0원"
 
     def _get_primary_account_config(self, market: str) -> Optional[Dict[str, Any]]:
-        """Resolve the representative account for the active mode and market."""
-        svr = "vps" if self.trading_mode == "demo" else "prod"
+        """Resolve the representative account for the active mode and market.
+
+        Goes through the broker rather than calling `kis_auth` directly, so a
+        Toss install resolves its own account instead of raising. `name` and
+        `product` are the only fields the callers use, and on the Toss path the
+        factory ignores both — Toss binds its account through `toss_config.yaml`.
+        """
         try:
-            return ka.resolve_account(svr=svr, product="01", market=market)
-        except ValueError:
+            from trading.brokers.settings import primary_account_scope
+
+            _key, name, product, _mode = primary_account_scope(market)
+            return {"name": name, "product": product}
+        except Exception as exc:  # noqa: BLE001 - no account means no report section
+            logger.warning(f"Primary {market} account resolution failed: {exc}")
             return None
 
     def create_portfolio_message(
@@ -373,7 +396,7 @@ class PortfolioTelegramReporter:
                 logger.error(f"Error fetching KR trading data for representative account '{kr_account['name']}': {str(e)}")
 
         # Fetch US trading data (if available)
-        if US_TRADING_AVAILABLE:
+        if _us_trading_available():
             us_account = self._get_primary_account_config("us")
             if us_account:
                 try:

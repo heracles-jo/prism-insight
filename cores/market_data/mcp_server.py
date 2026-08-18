@@ -92,6 +92,7 @@ from cores.market_data import (  # noqa: E402
     get_index_ohlcv_by_date,
     get_market_cap_by_date,
     get_market_ohlcv_by_date,
+    get_market_sector_map,
     get_market_ticker_name,
     get_market_trading_volume_by_date,
 )
@@ -309,6 +310,25 @@ def get_ticker_name(ticker: Union[str, int]) -> Dict[str, Any]:
     if name == code:
         return {"error": f"{code} 종목명을 어떤 소스에서도 받지 못했습니다."}
     return {"ticker": code, "name": name}
+
+
+@mcp.tool()
+def get_sector_info(market: str = "KOSPI") -> Dict[str, Any]:
+    """Retrieves sector/industry classification for all stocks in a market.
+
+    Args:
+        market (str): Market to query. "KOSPI" or "KOSDAQ". Defaults to "KOSPI".
+
+    Returns:
+        Dict[str, str]: Mapping of ticker codes to sector names.
+        Example: {"005930": "반도체와반도체장비", "005380": "자동차"}
+    """
+    mapping = get_market_sector_map(market)
+    if not mapping:
+        # An empty map is not "no stocks are classified" — it disables the
+        # top-down half of stock selection, which reads this by ticker.
+        return {"error": f"{market} 업종분류를 어떤 소스에서도 받지 못했습니다."}
+    return mapping
 
 
 def apply_report_source_order() -> str:

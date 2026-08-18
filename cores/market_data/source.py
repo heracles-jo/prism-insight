@@ -75,6 +75,13 @@ class MarketDataSource(Protocol):
     def ticker_name(self, ticker: str) -> str:
         """Company name for a ticker."""
 
+    def sector_map(self, market: str) -> dict[str, str]:
+        """Ticker to sector name, for every listed stock.
+
+        The only capability that answers about the whole market rather than one
+        instrument, which is why it takes a market instead of a ticker.
+        """
+
 
 class SourceChain:
     """Ask each source in turn until one answers.
@@ -93,7 +100,7 @@ class SourceChain:
     def names(self) -> list[str]:
         return [s.name for s in self._sources]
 
-    def fetch(self, capability: str, *args, **kwargs) -> pd.DataFrame | str:
+    def fetch(self, capability: str, *args, **kwargs) -> pd.DataFrame | str | dict:
         """Call `capability` on each source until one succeeds.
 
         Raises `Unavailable` listing every attempt when none can answer. The

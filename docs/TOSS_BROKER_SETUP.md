@@ -61,7 +61,19 @@ client_id: "발급받은_클라이언트_아이디"
 client_secret: "발급받은_클라이언트_시크릿"
 account_seq: "계좌_일련번호"
 base_url: "https://openapi.tossinvest.com"
+
+# 매매 설정 — 토스를 쓰면 이 파일에서 읽습니다
+default_unit_amount: 100000      # 종목당 매수 금액 (KRW)
+default_unit_amount_usd: 100     # 종목당 매수 금액 (USD)
+auto_trading: true
+default_mode: demo               # demo | real
+
+# account_name: "토스-메인"      # 생략 시 "toss-primary"
 ```
+
+> **`kis_devlp.yaml`은 만들지 않습니다.** 매매 설정은 각 브로커의 설정 파일이
+> 자기 것을 가지므로, 토스만 쓰는 설치에 KIS 설정 파일은 필요 없습니다.
+> 우선순위는 **환경변수 > 이 파일 > 코드 기본값**입니다.
 
 ### 방법 B — 환경변수 (컨테이너 권장)
 
@@ -84,6 +96,32 @@ PRISM_TRADING_MODE=demo    # demo(기본) | real
 
 > `trading/config/toss_config.yaml`과 토큰 캐시 파일은 `.gitignore`에 등록돼 있습니다.
 > 편집기 스왑 파일(`.swp`)도 함께 차단됩니다 — 스왑 파일은 버퍼 내용을 그대로 담습니다.
+
+### KIS를 쓰던 설치에서 갈아탈 때
+
+신규 설치라면 이 절은 건너뛰어도 됩니다.
+
+이미 거래 기록이 쌓인 DB(`stock_tracking_db.sqlite`)를 가지고 브로커를 바꾸는
+경우, 그 DB가 **v2.9.0 이전 스키마**라면 첫 기동 때 다중계좌 마이그레이션이
+돌면서 기존 행에 계좌 스코프(`account_key`/`account_name`)를 채웁니다. 그 값은
+**선택된 브로커**에서 나오므로, 토스라면 `account_seq`로 만들어집니다.
+
+```
+account_key = vps:<account_seq>:01     # PRISM_TRADING_MODE=demo
+              prod:<account_seq>:01    # PRISM_TRADING_MODE=real
+```
+
+주의할 점 두 가지:
+
+- **KIS 시절 행도 토스 계좌 스코프로 넘어갑니다.** 마이그레이션은 "이 설치가
+  앞으로 누구로 거래하는가"를 기준으로 이름표를 붙입니다. 과거 체결을
+  브로커별로 나눠 보관하고 싶다면 갈아타기 전에 DB를 백업해 두십시오.
+  마이그레이션은 `stock_holdings_pre_multi_account_backup` 테이블도 남깁니다.
+- **`account_seq`를 나중에 바꾸면 스코프가 어긋납니다.** 기존 행은 옛 키를 그대로
+  들고 있어 조회에서 빠집니다.
+
+`account_seq`가 비어 있으면 마이그레이션이 중단되고, 안내는 `kis_devlp.yaml`이
+아니라 `toss_config.yaml`을 가리킵니다.
 
 ---
 
@@ -207,6 +245,9 @@ PRISM_MARKET_DATA_SOURCES=toss,krx,fdr
 | `BrokerUnsupported: reserved order` | 정상 동작. 토스에 예약주문이 없습니다 |
 | demo인데 실제로 주문될까 걱정 | `[TOSS_DRYRUN] simulation active` 로그를 확인하세요. 주문 엔드포인트는 HTTP 경계에서 차단되며, 인식하지 못한 쓰기 요청도 기본 차단(default-deny)입니다 |
 | `PRISM_BROKER=kiwoom` 등 | 지원하지 않는 값은 조용히 넘어가지 않고 오류로 중단됩니다 |
+| `FileNotFoundError: .../kis_devlp.yaml` (기동 시) | v2.21.2에서 해결됨. 최신 버전을 받으세요 — 토스 설치는 KIS 설정 파일이 필요 없습니다 |
+| `Unable to verify the primary account ... Migration aborted` | 구 스키마 DB 마이그레이션에 `account_seq`가 필요합니다. 2절의 "KIS를 쓰던 설치에서 갈아탈 때" 참고 |
+| 대시보드·텔레그램 리포트에 보유 종목이 안 나옴 | v2.21.2 이전 버그. 가용성 판정이 "KIS 모듈이 임포트되나"를 물어 토스에서 빈 결과를 냈습니다 |
 
 ### 테스트가 로컬 `.env`에 영향을 받는다면
 

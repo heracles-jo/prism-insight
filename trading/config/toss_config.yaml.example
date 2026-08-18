@@ -26,7 +26,29 @@ client_secret: "s_발급받은_클라이언트_시크릿"
 
 # 주문·잔고 조회에 사용할 계좌 일련번호 (X-Tossinvest-Account 헤더 값).
 # GET /api/v1/accounts 로 조회할 수 있습니다.
+#
+# DB 의 account_key 도 이 값에서 만들어집니다 (vps|prod:<account_seq>:01).
+# 이미 거래 기록이 쌓인 뒤에 이 값을 바꾸면 기존 행과 스코프가 어긋납니다.
 account_seq: "계좌_일련번호"
+
+# 로그와 리포트에 표시할 계좌 이름. 생략하면 "toss-primary" 입니다.
+# 계좌번호가 아니라 사람이 읽는 이름이므로 마스킹되지 않습니다.
+# account_name: "토스-메인"
 
 # API 서버 주소 (수정하지 마세요)
 base_url: "https://openapi.tossinvest.com"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 매매 설정
+#
+# KIS 를 쓰지 않는 설치도 기동할 수 있도록, 매매 설정은 각 브로커의 설정 파일이
+# 자기 것을 가집니다. PRISM_BROKER=toss 일 때 아래 값을 읽습니다.
+# (KIS 를 쓸 때는 kis_devlp.yaml 의 같은 이름 키를 읽습니다 — 기존과 동일)
+#
+# 우선순위: 환경변수 > 이 파일 > 코드 기본값
+# ─────────────────────────────────────────────────────────────────────────────
+
+default_unit_amount: 100000      # 종목당 매수 금액 (KRW). 환경변수 PRISM_BUY_AMOUNT_KRW 가 우선
+default_unit_amount_usd: 100     # 종목당 매수 금액 (USD). 환경변수 PRISM_BUY_AMOUNT_USD 가 우선
+auto_trading: true               # 자동매매 작동 여부
+default_mode: demo               # demo | real. 환경변수 PRISM_TRADING_MODE 가 우선

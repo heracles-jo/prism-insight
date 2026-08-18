@@ -313,17 +313,23 @@ def _get_copy_columns(source_columns: list[str], target_columns: list[str]) -> l
 
 
 def _get_primary_account_scope() -> tuple[str, str]:
-    try:
-        from trading import kis_auth as ka
+    """Owner to stamp onto legacy rows, taken from whichever broker is in use.
 
-        default_mode = str(ka.getEnv().get("default_mode", "demo")).strip().lower()
-        svr = "vps" if default_mode == "demo" else "prod"
-        primary_account = ka.resolve_account(svr=svr, market="kr")
-        return primary_account["account_key"], primary_account["name"]
+    Asks the broker rather than KIS: a Toss install has no account in
+    `kis_devlp.yaml`, and used to be told to create one purely so the migration
+    could label rows it already owned.
+    """
+    try:
+        from trading.brokers.settings import primary_account_scope
+
+        account_key, account_name, _product, _mode = primary_account_scope("kr")
+        return account_key, account_name
     except Exception as exc:
+        from trading.brokers.settings import broker_config_hint
+
         raise RuntimeError(
             "Unable to verify the primary account required for KR DB migration. "
-            "Please ensure at least one account is configured in kis_devlp.yaml. "
+            f"{broker_config_hint()} "
             f"Migration aborted to prevent data orphaning. Cause: {exc}"
         ) from exc
 
@@ -451,9 +457,11 @@ def migrate_multi_account_schema(cursor, conn):
         try:
             account_key, account_name = _get_primary_account_scope()
         except Exception as exc:
+            from trading.brokers.settings import broker_config_hint
+
             raise RuntimeError(
                 "Unable to verify the primary account required for KR DB migration. "
-                "Please ensure at least one account is configured in kis_devlp.yaml. "
+                f"{broker_config_hint()} "
                 f"Migration aborted to prevent data orphaning. Cause: {exc}"
             ) from exc
         stock_defaults = {
@@ -491,9 +499,11 @@ def migrate_multi_account_schema(cursor, conn):
                 try:
                     account_key, account_name = _get_primary_account_scope()
                 except Exception as exc:
+                    from trading.brokers.settings import broker_config_hint
+
                     raise RuntimeError(
                         "Unable to verify the primary account required for KR DB migration. "
-                        "Please ensure at least one account is configured in kis_devlp.yaml. "
+                        f"{broker_config_hint()} "
                         f"Migration aborted to prevent data orphaning. Cause: {exc}"
                     ) from exc
             history_defaults = {

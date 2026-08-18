@@ -17,7 +17,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
-from trading import kis_auth as ka
+
+from trading.brokers.settings import trading_settings
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -63,11 +64,18 @@ def _sell_verdict(change_pct: float) -> str:
 
 
 def _get_primary_account_key(market: str) -> str | None:
-    default_mode = str(ka.getEnv().get("default_mode", "demo")).strip().lower()
-    svr = "vps" if default_mode == "demo" else "prod"
+    """Account key used to scope the weekly numbers, or None to leave them unscoped.
+
+    Must be the same resolver that stamped the rows. DB migration writes
+    account_key from `primary_account_scope()`, so asking `kis_auth` here
+    instead would scope the query to a KIS account on a machine whose rows are
+    filed under its Toss one — a silently empty report rather than an error.
+    """
     try:
-        return ka.resolve_account(svr=svr, market=market)["account_key"]
-    except Exception as exc:
+        from trading.brokers.settings import primary_account_scope
+
+        return primary_account_scope(market)[0]
+    except Exception as exc:  # noqa: BLE001 - unscoped beats no report
         logger.warning(f"Primary {market} account resolution failed: {exc}")
         return None
 

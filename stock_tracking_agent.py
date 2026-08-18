@@ -101,7 +101,39 @@ from tracking import (
     CompressionManager,
     TelegramSender,
 )
-from trading import kis_auth as ka
+# `kis_auth` is imported lazily at its use sites, not here. It reads
+# kis_devlp.yaml at module scope, so importing it up here makes this module —
+# the main trading loop — unstartable on a Toss-only install that has no KIS
+# config. See `_kis_auth()` below.
+
+
+def _mask_account_number(account_number: str | None) -> str:
+    """Mask an account number for safe logging.
+
+    A copy of `kis_auth.mask_account_number`, which is pure string work but sits
+    in a module that reads kis_devlp.yaml on import. Calling it from here made
+    every log line that names an account crash on a Toss install. Kept identical
+    on purpose; `test_lazy_kis_call_sites` asserts the two agree so they cannot
+    drift apart.
+    """
+    if not account_number:
+        return ""
+    account_str = str(account_number)
+    if len(account_str) <= 4:
+        return "*" * len(account_str)
+    return f"{account_str[:2]}{'*' * (len(account_str) - 4)}{account_str[-2:]}"
+
+
+def _kis_auth():
+    """KIS auth helpers, loaded on demand.
+
+    Only the KIS account-naming paths need these. Deferring the import keeps
+    the module importable without kis_devlp.yaml.
+    """
+    from trading import kis_auth as ka
+
+    return ka
+
 
 # Create MCPApp instance
 app = MCPApp(name="stock_tracking")
@@ -470,9 +502,28 @@ class StockTrackingAgent:
             return False
 
     def _get_trading_accounts(self) -> List[Dict[str, Any]]:
-        default_mode = str(ka.getEnv().get("default_mode", "demo")).strip().lower()
+        """Accounts this loop trades and books positions under.
+
+        Must agree with whatever stamped the rows in `stock_holdings`, which is
+        `primary_account_scope()`. Asking `kis_auth` unconditionally disagreed on
+        two axes at once on a Toss install — broker and mode — so the loop read
+        `vps:<kis_account>:01` while migration wrote `prod:<toss_seq>:01`. The
+        holdings scan then matched nothing, and worse, buys placed on the live
+        Toss account were booked under a KIS demo key where the sell path could
+        never see them: no stop-loss, no target, no exit.
+
+        Toss has one account, so the list has one entry. Multi-account fan-out
+        stays a KIS feature, which is what `accounts:` in kis_devlp.yaml is.
+        """
+        from trading.brokers.settings import primary_account_scope, selected_broker, TOSS
+
+        if selected_broker() == TOSS:
+            account_key, name, product, _mode = primary_account_scope("kr")
+            return [{"account_key": account_key, "name": name, "product": product}]
+
+        default_mode = str(_kis_auth().getEnv().get("default_mode", "demo")).strip().lower()
         svr = "vps" if default_mode == "demo" else "prod"
-        return ka.get_configured_accounts(svr=svr, market="kr")
+        return _kis_auth().get_configured_accounts(svr=svr, market="kr")
 
     def _set_active_account(self, account: Dict[str, Any]) -> None:
         self.active_account = account
@@ -497,9 +548,9 @@ class StockTrackingAgent:
         parts = account_key.split(":")
         if len(parts) == 3:
             scope, account_number, product = parts
-            return f"{account_name} ({scope}:{ka.mask_account_number(account_number)}:{product})"
+            return f"{account_name} ({scope}:{_mask_account_number(account_number)}:{product})"
 
-        return f"{account_name} ({ka.mask_account_number(account_key)})"
+        return f"{account_name} ({_mask_account_number(account_key)})"
 
     async def _extract_ticker_info(self, report_path: str) -> Tuple[str, str]:
         """Extract ticker code and company name (delegates to tracking.helpers)"""

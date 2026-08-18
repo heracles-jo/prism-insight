@@ -892,3 +892,40 @@ def test_buying_is_never_downgraded():
 
     whole, residual = broker._downgrade_to_whole(1.68, "BUY")
     assert whole is None and residual == 0
+
+
+def test_us_rows_carry_ticker_because_that_is_what_us_callers_read():
+    """KIS names the symbol key per market; US consumers read `ticker`.
+
+    KIS's KR trader emits `stock_code` and its US trader emits `ticker`, so a
+    US caller written against KIS reads `ticker`. Toss serves both markets
+    through one adapter and emitted only `stock_code`, which left
+    `generate_us_dashboard_json` rendering rows with a blank symbol
+    (`stock.get("ticker", "")`) and `us_telegram_summary_agent` matching no
+    holding at all. Found against a live account, where all five positions came
+    back with no ticker.
+    """
+    broker, _ = make_us_broker({("GET", "/api/v1/holdings"): FRACTIONAL_HOLDINGS})
+
+    rows = broker.get_portfolio()
+
+    assert [r["ticker"] for r in rows] == ["JEPI", "TQQQ"]
+    # Both keys, not a rename: market-agnostic callers read `stock_code`.
+    assert all(r["ticker"] == r["stock_code"] for r in rows)
+
+
+def test_kr_rows_do_not_grow_a_ticker_key():
+    """KIS's KR trader has no `ticker`, so neither should the KR adapter.
+
+    Adding it everywhere would make `"ticker" in row` useless as a signal and
+    invent a key the KR contract does not have.
+    """
+    from trading.brokers.toss.adapter import TossBroker
+
+    client = StubClient({("GET", "/api/v1/holdings"): FRACTIONAL_HOLDINGS})
+    broker = TossBroker(client, market="KR")
+
+    rows = broker.get_portfolio()
+
+    assert rows, "no KR rows in the fixture — the assertion below would be vacuous"
+    assert all("ticker" not in row for row in rows)

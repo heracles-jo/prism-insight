@@ -55,16 +55,29 @@ def _dict_to_markdown(data: dict, title: str = "") -> str:
 
 
 def _get_mcp_server_module():
-    """Import kospi_kosdaq_stock_server module for direct library calls.
+    """Market-data module used for direct library calls.
+
+    Returns the repo's own server rather than the PyPI
+    `kospi_kosdaq_stock_server`. That package scrapes KRX Data Marketplace with
+    an id/password session, and once KRX made login mandatory it stopped
+    answering at all — its pykrx fallback is switched off for the same reason.
+    Every tool then returned an error dict, quietly: the batch still finished
+    and the report was still produced, just with no moving averages, RSI, MACD
+    or investor flows.
+
+    The repo module exposes the same function names, argument order and dict
+    shape on top of the market-data source chain, so nothing downstream changes
+    except where the numbers come from. `get_sector_info` is the one it does
+    not carry yet; the caller already guards that.
 
     Returns:
-        The kospi_kosdaq_stock_server module, or None if import fails
+        The market data module, or None if import fails
     """
     try:
-        import kospi_kosdaq_stock_server as server
+        import cores.market_data.mcp_server as server
         return server
     except ImportError:
-        logger.warning("kospi_kosdaq_stock_server module not available, prefetch disabled")
+        logger.warning("market data module not available, prefetch disabled")
         return None
 
 
@@ -620,9 +633,26 @@ def prefetch_kr_analysis_data(company_code: str, reference_date: str, max_years_
     if kosdaq_index:
         result["kosdaq_index"] = kosdaq_index
 
-    if result:
-        logger.info(f"Prefetched KR data for {company_code}: {list(result.keys())}")
+    # Naming what is missing, not just what arrived. Listing the successes
+    # reads as a complete run whatever the length of the list, which is how a
+    # report with no investor flows looked identical to a healthy one. Each
+    # missing piece sends its agent back to the MCP tool, so this is a warning
+    # rather than a failure — but a silent one costs the section when that
+    # falls over too.
+    expected = ("stock_ohlcv", "trading_volume", "kospi_index", "kosdaq_index")
+    missing = [key for key in expected if key not in result]
+
+    if not result:
+        logger.warning(
+            f"Prefetched no KR data for {company_code}; all {len(expected)} inputs "
+            f"missing ({', '.join(expected)}). Agents fall back to MCP tools."
+        )
+    elif missing:
+        logger.warning(
+            f"Prefetched KR data for {company_code} is incomplete: "
+            f"missing {', '.join(missing)}. Those agents fall back to MCP tools."
+        )
     else:
-        logger.warning(f"Failed to prefetch any KR data for {company_code}")
+        logger.info(f"Prefetched KR data for {company_code}: {list(result.keys())}")
 
     return result

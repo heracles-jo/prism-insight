@@ -431,7 +431,13 @@ def test_us_dashboard_caches_primary_account_key(monkeypatch):
         return {"account_key": "vps:us-primary:01"}
 
     monkeypatch.setitem(dashboard_module._cfg, "default_mode", "demo")
-    monkeypatch.setattr(dashboard_module.ka, "resolve_account", fake_resolve_account)
+    # Patched on trading.kis_auth rather than on the dashboard module: the
+    # dashboard imports kis_auth inside _get_primary_account_key, so that a
+    # Toss-only install is not made to supply KIS credentials just to render a
+    # page. There is no module attribute to patch.
+    import trading.kis_auth
+
+    monkeypatch.setattr(trading.kis_auth, "resolve_account", fake_resolve_account)
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row

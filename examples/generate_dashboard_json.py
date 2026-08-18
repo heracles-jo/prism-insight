@@ -14,6 +14,7 @@ load_dotenv()  # Load environment variables from .env file
 
 import sqlite3
 import json
+from decimal import Decimal
 import sys
 import yaml
 from datetime import datetime, timedelta
@@ -78,13 +79,38 @@ except FileNotFoundError:
     _cfg = {"default_mode": "demo"}
     logger.warning(f"Configuration file not found: {CONFIG_FILE}. Using default mode (demo).")
 
-# Import Korea Investment & Securities API module
-try:
-    from trading.domestic_stock_trading import DomesticStockTrading
-    KIS_AVAILABLE = True
-except ImportError:
-    KIS_AVAILABLE = False
-    logger.warning("Korea Investment & Securities API module not found. Cannot fetch live trading data.")
+def _live_trading_available() -> bool:
+    """Can the configured broker give us a domestic trader?
+
+    This used to import `DomesticStockTrading` at module scope and treat the
+    result as the answer, which was wrong twice over. It made loading this
+    module require `kis_devlp.yaml`, and it asked about KIS specifically — so a
+    Toss install answered "no" and the dashboard silently rendered an empty
+    portfolio even though `domestic_trader()` would have worked. Ask the factory
+    the question actually being asked, and ask it lazily.
+    """
+    try:
+        from trading.brokers.factory import domestic_trader  # noqa: F401
+
+        return True
+    except Exception as exc:  # noqa: BLE001 - any failure means no live data
+        logger.warning(f"Live trading data unavailable: {exc}")
+        return False
+
+
+
+def _json_default(value):
+    """Serialise types json does not know, without lying about the number.
+
+    Toss reports US quantities as Decimal so that a full sell does not strand a
+    sliver (v2.21.1). json.dump refuses Decimal outright, which broke the whole
+    US dashboard write — five holdings fetched, nothing saved. float is right
+    here because this value is only ever displayed; the Decimal that matters is
+    the one the order path uses, and that never comes through JSON.
+    """
+    if isinstance(value, Decimal):
+        return float(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 class DashboardDataGenerator:
@@ -119,8 +145,8 @@ class DashboardDataGenerator:
     
     def get_kis_trading_data(self) -> Dict[str, Any]:
         """한국투자증권 API로부터 실전투자 데이터 가져오기"""
-        if not KIS_AVAILABLE:
-            logger.warning("한국투자증권 API를 사용할 수 없습니다.")
+        if not _live_trading_available():
+            logger.warning("실전투자 API를 사용할 수 없습니다.")
             return {"portfolio": [], "account_summary": {}}
         
         try:
@@ -1341,7 +1367,7 @@ class DashboardDataGenerator:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             
             with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                json.dump(data, f, ensure_ascii=False, indent=2, default=_json_default)
             
             file_size = output_path.stat().st_size
             logger.info(f"JSON 파일 저장 완료: {output_path} ({file_size:,} bytes)")

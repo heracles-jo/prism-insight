@@ -21,7 +21,7 @@ import time
 import pandas as pd
 
 from cores.market_data.schema import has_ohlcv, normalize
-from cores.market_data.source import Unavailable
+from cores.market_data.source import Unavailable, Unsupported
 
 # Minimum spacing between consecutive KRX requests, plus jitter.
 #
@@ -121,3 +121,8 @@ class KrxSource:
         if not name:
             raise Unavailable(f"KRX has no name for {ticker}")
         return name
+
+    def sector_map(self, market: str) -> dict[str, str]:
+        """Reachable in principle, but only behind the login this chain exists to
+        avoid — so it is declared missing rather than half-working."""
+        raise Unsupported("KRX sector classification needs the credentialed client")

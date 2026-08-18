@@ -406,3 +406,8 @@ class KisSource:
         # not "삼성전자". Returning that would label every chart with a market
         # name, so this is declared missing and the chain falls through.
         raise Unsupported("KIS inquire-price does not return a company name")
+
+    def sector_map(self, market: str) -> dict[str, str]:
+        """The KIS quote endpoints this source wraps are per-instrument; none of
+        them enumerates a market."""
+        raise Unsupported("KIS source publishes no sector classification")

@@ -36,9 +36,17 @@ _INDICATOR_CANDLES = "/api/v1/market-indicators/{symbol}/candles"
 _INVESTOR_TRADING = "/api/v1/stocks/{symbol}/investor-trading"
 _STOCKS = "/api/v1/stocks"
 
-# One request's worth. Toss paginates with `before`/`nextBefore`, so this only
-# sets how many round trips a long range costs.
-_PAGE = 200
+# One request's worth. Toss paginates, so these only set how many round trips a
+# long range costs — except that the two endpoints do not accept the same size.
+_CANDLE_PAGE = 200
+
+# Investor trading caps `count` at 100 and 400s above it — measured, 100 OK and
+# 101 rejected. Sharing the candle page size sent 200 and made every flow
+# lookup fail with `invalid-request`, which the chain reported as "no source
+# could answer": indistinguishable from a stock nobody traded. One page is ~5
+# months of trading days, so `_MAX_PAGES` still reaches back about eight years.
+_FLOW_PAGE = 100
+
 _MAX_PAGES = 20
 
 _PRICE_COLUMNS = {
@@ -151,7 +159,7 @@ class TossSource:
         before: str | None = None
 
         for _ in range(_MAX_PAGES):
-            page_params = dict(params, count=_PAGE)
+            page_params = dict(params, count=_CANDLE_PAGE)
             if before:
                 page_params["before"] = before
 
@@ -236,7 +244,7 @@ class TossSource:
         until: str | None = None
 
         for _ in range(_MAX_PAGES):
-            params: dict[str, Any] = {"count": _PAGE}
+            params: dict[str, Any] = {"count": _FLOW_PAGE}
             if until:
                 params["until"] = until
 
@@ -325,3 +333,9 @@ class TossSource:
                 if name:
                     return name
         raise Unavailable(f"Toss returned no name for {ticker}")
+
+    def sector_map(self, market: str) -> dict[str, str]:
+        """Toss publishes no industry classification. `/api/v1/stocks` carries
+        market, currency and trading status, but not what business a
+        company is in."""
+        raise Unsupported("Toss publishes no sector classification")
