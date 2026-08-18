@@ -94,34 +94,91 @@ async def get_current_stock_price(cursor, ticker: str, account_key: str | None =
                 await asyncio.sleep(wait)
             else:
                 logger.error(traceback.format_exc())
-                # KRX exhausted — try KIS before the DB fallback. A new buy
-                # candidate has no stock_holdings row, so the DB fallback
-                # returns 0 and the whole report analysis is silently skipped
-                # (2026-07-13 KRX outage dropped all 3 afternoon candidates).
-                kis_price = await _get_price_from_kis(ticker)
-                if kis_price > 0:
-                    return kis_price
+                # KRX exhausted — try the broker, then the source chain, before
+                # the DB fallback. A new buy candidate has no stock_holdings row,
+                # so the DB fallback returns 0 and the whole report analysis is
+                # silently skipped (2026-07-13 KRX outage dropped all 3 afternoon
+                # candidates; on 2026-08-18 a Toss install dropped all 3 again at
+                # the same spot, for want of the KIS credentials this used to
+                # assume).
+                broker_price = await _get_price_from_broker(ticker)
+                if broker_price > 0:
+                    return broker_price
+                chain_price = _get_price_from_chain(ticker)
+                if chain_price > 0:
+                    return chain_price
                 return _get_last_price_from_db(cursor, ticker, account_key=account_key)
 
 
-async def _get_price_from_kis(ticker: str) -> float:
-    """KIS quote fallback for when KRX (data.krx.co.kr) is down.
+async def _get_price_from_broker(ticker: str) -> float:
+    """Live quote from whichever broker this install trades through.
 
-    KIS is an independent provider whose credentials are already configured
-    wherever the tracking agents run (same creds the order path uses).
-    Returns 0.0 on any failure — caller falls back to the last DB price.
+    This used to import `trading.domestic_stock_trading` directly, and its
+    docstring said KIS credentials "are already configured wherever the tracking
+    agents run". That stopped being true once the broker became selectable: a
+    Toss install has no KIS credentials, the call 403s, and since a fresh buy
+    candidate has no `stock_holdings` row the DB fallback returns 0 and the
+    candidate is dropped before anything looks at it. One batch reported
+    `Purchased: 0 items` with all three candidates lost exactly here.
+
+    Returns 0.0 on any failure — the caller falls through to the next source.
     """
     import asyncio
+
     try:
-        from trading.domestic_stock_trading import AsyncTradingContext
-        async with AsyncTradingContext() as trading:
-            info = await asyncio.to_thread(trading.get_current_price, ticker)
+        from trading.brokers.factory import domestic_trader
+
+        # A trader, not a context: `domestic_trader()` returns the object
+        # itself, unlike the AsyncTradingContext this replaced.
+        trader = domestic_trader()
+        info = await asyncio.to_thread(trader.get_current_price, ticker)
         price = float((info or {}).get("current_price") or 0)
         if price > 0:
-            logger.warning(f"{ticker} current price via KIS fallback: {price:,.0f} KRW (KRX unavailable)")
+            logger.info(
+                f"{ticker} current price via broker: {price:,.0f} KRW (KRX unavailable)"
+            )
         return price
     except Exception as e:
-        logger.error(f"{ticker} KIS price fallback failed: {e}")
+        logger.error(f"{ticker} broker price lookup failed: {e}")
+        return 0.0
+
+
+def _get_price_from_chain(ticker: str) -> float:
+    """Most recent close from the market-data source chain.
+
+    A last line before the DB fallback, which returns 0 for anything not
+    already held — precisely the new buy candidates this matters for. The chain
+    reaches sources the broker path does not, so it can answer on an install
+    where both KRX and the broker are unreachable.
+
+    A close is not a live quote, and the log says so. It is still a real number
+    for a real instrument, which is what the alternative — zero, meaning "drop
+    this candidate" — is not.
+    """
+    try:
+        import datetime
+
+        from cores.market_data import get_market_ohlcv_by_date
+
+        end = datetime.datetime.now()
+        start = end - timedelta(days=10)
+        # Argument order is (start, end, ticker).
+        frame = get_market_ohlcv_by_date(
+            start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), ticker
+        )
+        # The chain returns an empty frame when no source could answer; it does
+        # not raise, so an exhausted chain looks like a short frame here.
+        if frame is None or len(frame) == 0 or "Close" not in frame.columns:
+            return 0.0
+        price = float(frame["Close"].iloc[-1])
+        if price > 0:
+            logger.info(
+                f"{ticker} current price via source chain: {price:,.0f} KRW "
+                "(last close, not a live quote)"
+            )
+        return price
+    except Exception as e:
+        logger.error(f"{ticker} source chain price lookup failed: {e}")
         return 0.0
 
 

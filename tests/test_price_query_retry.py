@@ -70,6 +70,24 @@ async def _run():
     import krx_data_client as K
     _o_nbd = K.get_nearest_business_day_in_a_week
     _o_ohlcv = K.get_market_ohlcv_by_ticker
+    # Stub the steps that sit between KRX and the DB fallback. This file is
+    # about the retry loop and the DB fallback, and reaching a broker or the
+    # source chain here would make it depend on the network — it already did,
+    # silently: the KIS step used to "fail" only because no credentials were
+    # configured, and the day a working source appeared behind it the DB
+    # fallback stopped being reached at all.
+    _o_broker = H._get_price_from_broker
+    _o_chain = H._get_price_from_chain
+
+    async def _no_broker(_ticker):
+        return 0.0
+
+    def _no_chain(_ticker):
+        return 0.0
+
+    H._get_price_from_broker = _no_broker
+    H._get_price_from_chain = _no_chain
+
     try:
         K.get_nearest_business_day_in_a_week = lambda *a, **k: "20260529"
 
@@ -123,6 +141,8 @@ async def _run():
         check("종목 부재 시 fallback 0.0", price5 == 0.0)
 
     finally:
+        H._get_price_from_broker = _o_broker
+        H._get_price_from_chain = _o_chain
         asyncio.sleep = _orig_sleep
         K.get_nearest_business_day_in_a_week = _o_nbd
         K.get_market_ohlcv_by_ticker = _o_ohlcv

@@ -216,6 +216,10 @@ def _resolve_config_path(label: str) -> Path | None:
     correct — so if the loader's precedence changes, change it here too.
     """
 
+    if label == "agent":
+        # Always this file: it is what mcp-agent reads, regardless of what the
+        # loader's search order would prefer.
+        return config_loader._LEGACY_CONFIG
     if label == "report":
         override = os.environ.get("REPORT_MCP_CONFIG")
         if override:
@@ -228,6 +232,27 @@ def _resolve_config_path(label: str) -> Path | None:
     if config_loader._LEGACY_CONFIG.exists():
         return config_loader._LEGACY_CONFIG
     return None
+
+
+def _load_agent_registry():
+    """The agent path config, read directly rather than through the loader.
+
+    `load_mcp_registry` prefers the native registry and only falls back to this
+    file when native is absent, so on a normal install nothing ever inspects it
+    — and the servers it declares are most of a batch's MCP traffic. A host
+    whose `python3` cannot import `mcp` produced 130 errors and no output at
+    all, and the diagnostic reported everything healthy because it had never
+    looked here.
+
+    No interpolation: mcp-agent does not expand ${VAR} when it reads this file
+    (measured), so the diagnostic must see the same literal values it will.
+    """
+    from cores.llm.mcp_registry import McpServerRegistry
+
+    path = config_loader._LEGACY_CONFIG
+    if not path.exists():
+        raise FileNotFoundError(f"{path} not present")
+    return McpServerRegistry.from_yaml_dict(yaml.safe_load(path.read_text()) or {})
 
 
 def _raw_servers(path: Path | None) -> dict:
@@ -347,6 +372,10 @@ def main(argv: list[str] | None = None) -> int:
     env_source = _load_repo_env(project_root)
 
     sources = [("report", load_report_mcp_registry)]
+    if config_loader._LEGACY_CONFIG.exists():
+        # Checked by default, not behind --all: the analysis agents are the bulk
+        # of a batch, and their servers were the ones dying unseen.
+        sources.append(("agent", _load_agent_registry))
     if args.all:
         sources.append(("native", load_mcp_registry))
 
@@ -355,10 +384,18 @@ def main(argv: list[str] | None = None) -> int:
         "project_root": str(project_root),
         "env": env_source,
         "config": {
+            # The four original keys are kept verbatim: this output gets diffed
+            # against other hosts, possibly running an older build, and renaming
+            # one would break the comparison this tool exists for.
             "native": str(config_loader._NATIVE_CONFIG),
             "native_exists": config_loader._NATIVE_CONFIG.exists(),
+            "native_role": "report generation",
             "legacy": str(config_loader._LEGACY_CONFIG),
             "legacy_exists": config_loader._LEGACY_CONFIG.exists(),
+            # Not a leftover. mcp-agent reads this for the analysis agents —
+            # company info, macro, news, the buy and sell specialists — which
+            # are most of the MCP traffic in a batch.
+            "legacy_role": "analysis agents (mcp-agent)",
         },
         "registries": {},
     }
@@ -397,10 +434,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"host: {payload['host']}")
     print(f"root: {payload['project_root']}")
     cfg = payload["config"]
-    print(
-        f"config: native={'y' if cfg['native_exists'] else 'n'} "
-        f"legacy={'y' if cfg['legacy_exists'] else 'n'}"
-    )
+    print("config:")
+    for key, label in (("native", "report path"), ("legacy", "agent path ")):
+        state = "present" if cfg[f"{key}_exists"] else "MISSING"
+        name = Path(cfg[key]).name
+        print(f"  {label} ({name})  {state}  — {cfg[f'{key}_role']}")
     env_info = payload["env"]
     print(
         f"env: {env_info['path']} "
@@ -408,8 +446,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     if cfg["legacy_exists"]:
         print(
-            "  note: a legacy mcp_agent.config.yaml is still present but no "
-            "longer used; delete it to stop it drifting"
+            "  note: ${VAR} is not expanded in the agent path config — "
+            "mcp-agent does not interpolate, so values go in the file itself"
+        )
+    else:
+        # Its absence is the problem, not its presence. This used to advise
+        # deleting it as a leftover, which would have taken out every analysis
+        # agent: the report path moved to the native registry, the agents did
+        # not, and a batch log showed 25 references to this file.
+        print(
+            "  the agent path config is missing; the analysis agents have no "
+            "MCP servers without it"
         )
     for label, data in payload["registries"].items():
         print(f"\n[{label}] source={data.get('source')}")
