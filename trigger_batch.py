@@ -736,6 +736,14 @@ def trigger_morning_volume_surge(trade_date: str, snapshot: pd.DataFrame, prev_s
 
     # Apply absolute criteria (raised to 10B KRW trade value)
     snap = apply_absolute_filters(snap, min_value=SCREENING_MIN_TRADE_VALUE)
+    if snap.empty:
+        # Arithmetic against `prev` below aligns on the index union, which
+        # on an empty frame expands it back to the full universe with the
+        # original columns left empty — the frame then compares two columns
+        # of different lengths and raises. Three of the other triggers already
+        # guard here; this one did not.
+        logger.warning("No stocks after absolute criteria filtering")
+        return pd.DataFrame()
 
     # Calculate volume ratio
     snap["volume_ratio"] = snap["Volume"] / prev["Volume"].replace(0, np.nan)
@@ -809,6 +817,14 @@ def trigger_morning_gap_up_momentum(trade_date: str, snapshot: pd.DataFrame, pre
 
     # Apply absolute criteria (raised to 10B KRW trade value)
     snap = apply_absolute_filters(snap, min_value=SCREENING_MIN_TRADE_VALUE)
+    if snap.empty:
+        # Arithmetic against `prev` below aligns on the index union, which
+        # on an empty frame expands it back to the full universe with the
+        # original columns left empty — the frame then compares two columns
+        # of different lengths and raises. Three of the other triggers already
+        # guard here; this one did not.
+        logger.warning("No stocks after absolute criteria filtering")
+        return pd.DataFrame()
 
     # Calculate gap rate
     snap["gap_up_rate"] = (snap["Open"] / prev["Close"] - 1) * 100
@@ -1011,6 +1027,14 @@ def trigger_afternoon_daily_rise_top(trade_date: str, snapshot: pd.DataFrame, pr
 
     # Apply absolute criteria (raised to 10B KRW trade value)
     snap = apply_absolute_filters(snap.copy(), min_value=SCREENING_MIN_TRADE_VALUE)
+    if snap.empty:
+        # Arithmetic against `prev` below aligns on the index union, which
+        # on an empty frame expands it back to the full universe with the
+        # original columns left empty — the frame then compares two columns
+        # of different lengths and raises. Three of the other triggers already
+        # guard here; this one did not.
+        logger.warning("No stocks after absolute criteria filtering")
+        return pd.DataFrame()
 
     # Calculate two types of change rates
     snap["intraday_change_rate"] = (snap["Close"] / snap["Open"] - 1) * 100  # Current vs opening price
@@ -1063,6 +1087,14 @@ def trigger_afternoon_closing_strength(trade_date: str, snapshot: pd.DataFrame, 
 
     # Apply absolute criteria (raised to 10B KRW trade value)
     snap = apply_absolute_filters(snap, min_value=SCREENING_MIN_TRADE_VALUE)
+    if snap.empty:
+        # Arithmetic against `prev` below aligns on the index union, which
+        # on an empty frame expands it back to the full universe with the
+        # original columns left empty — the frame then compares two columns
+        # of different lengths and raises. Three of the other triggers already
+        # guard here; this one did not.
+        logger.warning("No stocks after absolute criteria filtering")
+        return pd.DataFrame()
 
     # Calculate closing strength (closer to high = closer to 1)
     snap["closing_strength"] = 0.0  # Set default value
@@ -1142,6 +1174,14 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
 
     # Apply absolute criteria (raised to 10B KRW trade value)
     snap = apply_absolute_filters(snap, min_value=SCREENING_MIN_TRADE_VALUE)
+    if snap.empty:
+        # Arithmetic against `prev` below aligns on the index union, which
+        # on an empty frame expands it back to the full universe with the
+        # original columns left empty — the frame then compares two columns
+        # of different lengths and raises. Three of the other triggers already
+        # guard here; this one did not.
+        logger.warning("No stocks after absolute criteria filtering")
+        return pd.DataFrame()
 
     # Calculate volume increase rate
     snap["volume_increase_rate"] = (snap["Volume"] / prev["Volume"].replace(0, np.nan) - 1) * 100
@@ -1362,6 +1402,12 @@ def trigger_contrarian_value(trade_date: str, snapshot: pd.DataFrame,
 
     # Absolute filters (100억원)
     snap = apply_absolute_filters(snap, min_value=SCREENING_MIN_TRADE_VALUE)
+    if snap.empty:
+        # See the identical guard in the other triggers: the arithmetic below
+        # aligns against `prev`, which on an empty frame expands it back to the
+        # full universe with the original columns left empty.
+        logger.warning("No stocks after absolute criteria filtering")
+        return pd.DataFrame()
 
     # Filter rising stocks today (Close > Open) — positive recovery signal
     snap["DailyChange"] = ((snap["Close"] - prev["Close"]) / prev["Close"]) * 100
