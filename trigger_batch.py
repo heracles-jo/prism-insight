@@ -55,16 +55,77 @@ def _normalize_ticker_code(ticker) -> str:
     return ticker_code
 
 
+def _load_stock_map_file() -> dict[str, str] | None:
+    """The code -> name map `update_stock_data.py` refreshes every morning.
+
+    Reading it is free, and it is the same data the KRX call below fetches. The
+    Telegram and Kakao bots already read this file; the batch did not, so every
+    run paid for the map again.
+    """
+    import json
+    from datetime import datetime as _dt
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent / "stock_map.json"
+    try:
+        if not path.exists():
+            return None
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        mapping = payload.get("code_to_name") or {}
+        if not mapping:
+            return None
+        age_days = (_dt.now() - _dt.fromisoformat(payload["updated_at"])).days \
+            if payload.get("updated_at") else None
+        if age_days is not None and age_days > 7:
+            # Stale enough that a newly listed stock would be missing. Fall
+            # through and refresh; the per-ticker chain still backs this up.
+            logger.warning(f"stock_map.json is {age_days} days old; refetching names")
+            return None
+        return {_normalize_ticker_code(code): str(name) for code, name in mapping.items()}
+    except Exception as exc:  # noqa: BLE001 - a bad cache is just a cache miss
+        logger.warning(f"stock_map.json unreadable ({exc}); refetching names")
+        return None
+
+
 def _get_ticker_name_map() -> dict[str, str]:
-    """Fetch all ticker names once per process to avoid repeated KRX calls."""
+    """All ticker names, once per process.
+
+    Order matters for a reason found by running the morning batch against a
+    blocked KRX account: the client authenticates through a real browser, the
+    data page bounces it back to the login form, and it retries with 20-30s
+    backoff. That is minutes of the batch's critical path spent to end up with
+    the empty map this used to return — while `stock_map.json`, refreshed at
+    07:00 by update_stock_data.py, held the same names all along.
+    """
     global _TICKER_NAME_CACHE
-    if _TICKER_NAME_CACHE is None:
+    if _TICKER_NAME_CACHE is not None:
+        return _TICKER_NAME_CACHE
+
+    cached = _load_stock_map_file()
+    if cached:
+        logger.info(f"Ticker names from stock_map.json: {len(cached)} stocks")
+        _TICKER_NAME_CACHE = cached
+        return _TICKER_NAME_CACHE
+
+    try:
+        client = _get_client()
+        names = client.get_market_ticker_name(market="ALL")
+        _TICKER_NAME_CACHE = {_normalize_ticker_code(ticker): str(name) for ticker, name in names.items()}
+    except Exception as e:
+        logger.warning(f"KRX ticker name lookup failed ({e}); trying FinanceDataReader")
         try:
-            client = _get_client()
-            names = client.get_market_ticker_name(market="ALL")
-            _TICKER_NAME_CACHE = {_normalize_ticker_code(ticker): str(name) for ticker, name in names.items()}
-        except Exception as e:
-            logger.warning(f"KRX ticker name lookup failed; using ticker codes as names: {e}")
+            import FinanceDataReader as fdr
+
+            listing = fdr.StockListing("KRX")
+            _TICKER_NAME_CACHE = {
+                _normalize_ticker_code(code): str(name)
+                for code, name in zip(listing["Code"], listing["Name"])
+                if str(code).strip() and str(name).strip()
+            }
+            logger.info(f"Ticker names from FinanceDataReader: {len(_TICKER_NAME_CACHE)} stocks")
+        except Exception as fdr_exc:  # noqa: BLE001 - names are not worth failing the batch
+            logger.warning(f"FDR ticker names unavailable ({fdr_exc}); using ticker codes as names")
             _TICKER_NAME_CACHE = {}
     return _TICKER_NAME_CACHE
 

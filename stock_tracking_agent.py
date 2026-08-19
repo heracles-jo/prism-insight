@@ -4512,8 +4512,10 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        # Execute asyncio
-        asyncio.run(main())
+        # Propagate the result. Discarding it meant "Report path not specified"
+        # — and every other way `run()` reports failure — still exited 0, so a
+        # supervisor or an operator reading $? saw a successful trading pass.
+        sys.exit(0 if asyncio.run(main()) else 1)
     except Exception as e:
         logger.error(f"Error during program execution: {str(e)}")
         logger.error(traceback.format_exc())
