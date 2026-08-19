@@ -113,19 +113,17 @@ def _get_ticker_name_map() -> dict[str, str]:
         names = client.get_market_ticker_name(market="ALL")
         _TICKER_NAME_CACHE = {_normalize_ticker_code(ticker): str(name) for ticker, name in names.items()}
     except Exception as e:
-        logger.warning(f"KRX ticker name lookup failed ({e}); trying FinanceDataReader")
+        logger.warning(f"KRX ticker name lookup failed ({e}); trying Naver")
         try:
-            import FinanceDataReader as fdr
+            from cores.naver_market_snapshot import fetch_naver_ticker_names
 
-            listing = fdr.StockListing("KRX")
             _TICKER_NAME_CACHE = {
-                _normalize_ticker_code(code): str(name)
-                for code, name in zip(listing["Code"], listing["Name"])
-                if str(code).strip() and str(name).strip()
+                _normalize_ticker_code(code): name
+                for code, name in fetch_naver_ticker_names().items()
             }
-            logger.info(f"Ticker names from FinanceDataReader: {len(_TICKER_NAME_CACHE)} stocks")
-        except Exception as fdr_exc:  # noqa: BLE001 - names are not worth failing the batch
-            logger.warning(f"FDR ticker names unavailable ({fdr_exc}); using ticker codes as names")
+            logger.info(f"Ticker names from Naver: {len(_TICKER_NAME_CACHE)} stocks")
+        except Exception as naver_exc:  # noqa: BLE001 - names are not worth failing the batch
+            logger.warning(f"Naver ticker names unavailable ({naver_exc}); using ticker codes as names")
             _TICKER_NAME_CACHE = {}
     return _TICKER_NAME_CACHE
 

@@ -79,9 +79,10 @@ def _fetch_code_to_name() -> dict:
     the login form and the run dies. That is not hypothetical — it is what this
     script did every day, and the caller below swallowed it.
 
-    FinanceDataReader's KRX listing carries the same code/name pairs in a single
-    unauthenticated request. It is not used first because KRX is the registry of
-    record; it is used when KRX cannot be reached at all.
+Naver carries the same code/name pairs in the bulk rows the screening
+    snapshot already reads, and needs no login — which is why the KRX-login data
+    was rerouted there in the first place. KRX stays first only because it is
+    the registry of record.
 
     The per-ticker source chain is deliberately not the fallback here: it
     answers one name per call, and this needs a few thousand.
@@ -90,22 +91,11 @@ def _fetch_code_to_name() -> dict:
         client = _get_client()
         return client.get_market_ticker_name(market="ALL")
     except Exception as exc:  # noqa: BLE001 - any KRX failure means try the other one
-        logger.warning(f"KRX name map unavailable ({exc}); falling back to FinanceDataReader")
+        logger.warning(f"KRX name map unavailable ({exc}); falling back to Naver")
 
-    import FinanceDataReader as fdr
+    from cores.naver_market_snapshot import fetch_naver_ticker_names
 
-    listing = fdr.StockListing("KRX")
-    columns = set(listing.columns)
-    if not {"Code", "Name"} <= columns:
-        raise RuntimeError(f"FDR listing lacks Code/Name; got {sorted(columns)}")
-    mapping = {
-        str(code).zfill(6): str(name)
-        for code, name in zip(listing["Code"], listing["Name"])
-        if str(code).strip() and str(name).strip()
-    }
-    if not mapping:
-        raise RuntimeError("FDR listing returned no code/name pairs")
-    return mapping
+    return fetch_naver_ticker_names()
 
 
 def main():

@@ -236,6 +236,39 @@ def _fetch_daily_pair(
     raise NaverSnapshotError(f"{ticker} detail failed: {last_exc}")
 
 
+def fetch_naver_ticker_names(
+    *,
+    request_get: Callable = requests.get,
+    timeout: float = 10.0,
+    max_attempts: int = 3,
+    retry_wait_sec: float = 0.5,
+    max_workers: int = 5,
+) -> dict[str, str]:
+    """The whole KRX code -> name map, from the bulk rows this module already reads.
+
+    Naver is where the KRX-login data was rerouted when the OpenAPI turned out
+    not to cover everything, so names come from the same place as the rest of
+    the screening inputs rather than a fourth provider. The bulk response
+    carries `itemCode` and `stockName` in the very rows used to build the
+    snapshot — nothing extra is requested, and no login exists to fail.
+    """
+    rows = _fetch_bulk_rows(
+        request_get,
+        timeout=timeout,
+        max_attempts=max_attempts,
+        retry_wait_sec=retry_wait_sec,
+        max_workers=max_workers,
+    )
+    names = {
+        str(row.get("itemCode", "")).strip(): str(row.get("stockName", "")).strip()
+        for row in rows
+    }
+    names.pop("", None)
+    if not names:
+        raise NaverSnapshotError("Naver bulk rows carried no itemCode/stockName pairs")
+    return names
+
+
 def fetch_naver_snapshot_bundle(
     trade_date: str,
     *,

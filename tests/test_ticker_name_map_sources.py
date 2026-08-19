@@ -61,23 +61,22 @@ def test_a_missing_or_corrupt_map_is_just_a_cache_miss(tmp_path, monkeypatch):
     assert tb._load_stock_map_file() is None
 
 
-def test_krx_failure_falls_through_to_finance_data_reader(tmp_path, monkeypatch):
-    """The batch must not degrade every name to a bare ticker code just because
-    KRX will not log in — that reached users as "009150 (009150)" in 2026-08."""
-    import pandas as pd
+def test_krx_failure_falls_through_to_naver(tmp_path, monkeypatch):
+    """Naver, not a fourth provider: the KRX-login data was rerouted there when
+    the OpenAPI turned out not to cover everything, and the bulk rows the
+    screening snapshot already reads carry itemCode/stockName.
 
+    The batch must not degrade every name to a bare ticker code just because
+    KRX will not log in — that reached users as "009150 (009150)" in 2026-08."""
     monkeypatch.setattr(tb, "__file__", str(tmp_path / "trigger_batch.py"))  # no map file
 
     def _krx_down():
         raise RuntimeError("session invalidated")
 
     monkeypatch.setattr(tb, "_get_client", _krx_down)
-
-    class _FDR:
-        @staticmethod
-        def StockListing(_market):
-            return pd.DataFrame({"Code": ["005930"], "Name": ["삼성전자"]})
-
-    monkeypatch.setitem(__import__("sys").modules, "FinanceDataReader", _FDR)
+    monkeypatch.setattr(
+        "cores.naver_market_snapshot.fetch_naver_ticker_names",
+        lambda **_: {"005930": "삼성전자"},
+    )
 
     assert tb._get_ticker_name_map() == {"005930": "삼성전자"}
