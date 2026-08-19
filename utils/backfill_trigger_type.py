@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import os
 import sqlite3
 import json
 import glob
@@ -20,6 +21,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 import logging
+
+# Load .env before reading STOCK_TRACKING_DB: a fresh process does not inherit
+# it, and an install that sets the override there rather than exporting it would
+# otherwise have this tool touch a different database than the agents write to.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+except Exception:
+    pass
+
 
 # Setup logging
 logging.basicConfig(
@@ -34,19 +45,19 @@ _TRIGGER_MAP: Dict[tuple, dict] = {}
 
 
 def get_db_path() -> Path:
-    """Get database path"""
-    # Try relative path first (when running from project root)
-    db_path = Path("stock_tracking_db.sqlite")
-    if db_path.exists():
-        return db_path
+    """Get database path — the same chain the agents and seller tools use.
 
-    # Try from utils directory
-    project_root = Path(__file__).parent.parent
-    db_path = project_root / "stock_tracking_db.sqlite"
-    if db_path.exists():
-        return db_path
-
-    raise FileNotFoundError("Database not found")
+    The CWD-relative attempt that used to come first is gone on purpose: an
+    install upgrading from the old cron may still have an orphan half-empty
+    database in some working directory, and preferring it meant migrating the
+    orphan and reporting success while the real repo-root database — the one
+    every agent now reads — never received the migration.
+    """
+    override = os.getenv("STOCK_TRACKING_DB")
+    db_path = Path(override) if override else Path(__file__).resolve().parents[1] / "stock_tracking_db.sqlite"
+    if not db_path.exists():
+        raise FileNotFoundError(f"Database not found: {db_path}")
+    return db_path
 
 
 def simplify_trigger_type(trigger_type: str) -> str:

@@ -124,6 +124,21 @@ def _mask_account_number(account_number: str | None) -> str:
     return f"{account_str[:2]}{'*' * (len(account_str) - 4)}{account_str[-2:]}"
 
 
+def _toss_selected() -> bool:
+    """Whether this install trades KR through Toss.
+
+    Answered without opening a broker context, and never raises: an
+    unreadable broker configuration is reported where it matters, and here
+    it only means "do not apply the Toss-specific session gate".
+    """
+    try:
+        from trading.brokers.settings import selected_broker, TOSS
+
+        return selected_broker() == TOSS
+    except Exception:  # noqa: BLE001 - see docstring
+        return False
+
+
 def _kis_auth():
     """KIS auth helpers, loaded on demand.
 
@@ -201,7 +216,11 @@ class StockTrackingAgent:
     SCORE_CONSIDER = 7  # Consider buying
     SCORE_UNSUITABLE = 6  # Unsuitable for buying
 
-    def __init__(self, db_path: str = "stock_tracking_db.sqlite", telegram_token: str = None, enable_journal: bool = None):
+    # Same resolution chain as the seller tools (hardstop/fill-chaser/...):
+    # STOCK_TRACKING_DB override first, then anchored to this file, never the
+    # CWD — a cron started from another directory used to split the buy loop
+    # and the sell loops across two different database files.
+    def __init__(self, db_path: str = os.getenv("STOCK_TRACKING_DB") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_tracking_db.sqlite"), telegram_token: str = None, enable_journal: bool = None):
         """
         Initialize agent
 
@@ -515,11 +534,20 @@ class StockTrackingAgent:
         Toss has one account, so the list has one entry. Multi-account fan-out
         stays a KIS feature, which is what `accounts:` in kis_devlp.yaml is.
         """
-        from trading.brokers.settings import primary_account_scope, selected_broker, TOSS
+        from trading.brokers.settings import (
+            buy_amount,
+            primary_account_scope,
+            selected_broker,
+            TOSS,
+        )
 
         if selected_broker() == TOSS:
             account_key, name, product, _mode = primary_account_scope("kr")
-            return [{"account_key": account_key, "name": name, "product": product}]
+            # buy_amount_krw is the key regime_policy.configured_entry_amount
+            # reads; kis_auth fills it for KIS accounts, so its absence here
+            # blocked every rebound-pilot entry under Toss.
+            return [{"account_key": account_key, "name": name, "product": product,
+                     "buy_amount_krw": buy_amount("kr")}]
 
         default_mode = str(_kis_auth().getEnv().get("default_mode", "demo")).strip().lower()
         svr = "vps" if default_mode == "demo" else "prod"
@@ -3116,6 +3144,12 @@ class StockTrackingAgent:
             # broker quantity ONCE (first sell of that ticker this pass) and
             # distribute from the snapshot using an in-pass accumulator —
             # independent of fill timing.
+            # Sells this pass declined to attempt because the KR market is shut.
+            # Collected so the operator gets one visible line instead of only
+            # per-ticker errors: under Toss the 15:40 afternoon batch reaches
+            # this loop past 15:30, so an exit decided there cannot be placed at
+            # all — the schedule, not the code, is what has to change.
+            skipped_closed_market: List[str] = []
             pass_total_qty: Dict[str, int] = {}   # ticker -> snapshot total qty
             pass_sold_qty: Dict[str, int] = {}    # ticker -> cumulative ordered qty
             blocked_tickers: set[str] = set()
@@ -3206,6 +3240,36 @@ class StockTrackingAgent:
                         self.cursor, ticker, account_key=stock.get("account_key")
                     ).get("row_count", 1)
 
+                    # Toss refuses an out-of-session KR order outright — there is
+                    # no queue and no closing-price order — but sell_stock below
+                    # deletes the row and books P&L BEFORE the order is placed.
+                    # Without this gate a refused sell left no record of the
+                    # position while the shares stayed at the broker. Skipping
+                    # keeps the row untouched, so the next pass retries normally.
+                    # (Mirrors the US gate in prism-us/us_stock_tracking_agent.)
+                    if current_price > 0 and _toss_selected():
+                        try:
+                            async with ExecutionService.domestic(
+                                account_name=stock.get("account_name"),
+                            ) as _gate:
+                                _sellable = await asyncio.to_thread(_gate.is_market_open)
+                        except Exception as gate_err:  # noqa: BLE001
+                            # Unknown session state counts as "not sellable":
+                            # keeping the position costs a cycle, destroying its
+                            # only record costs the position.
+                            logger.warning(
+                                f"{ticker} could not confirm a Toss KR session "
+                                f"({gate_err}); keeping the position for the next pass"
+                            )
+                            _sellable = False
+                        if not _sellable:
+                            logger.error(
+                                f"{ticker} KR market is not in its regular window — "
+                                f"skipping sell (position kept, row untouched)"
+                            )
+                            skipped_closed_market.append(f"{company_name}({ticker})")
+                            continue
+
                     # Process sell (deletes only this row when N>1, else the ticker)
                     sell_success = await self.sell_stock(stock, sell_reason)
 
@@ -3220,6 +3284,10 @@ class StockTrackingAgent:
                             # distribute from (snapshot - already_ordered), so fills
                             # that haven't settled yet cannot cause an over-sell.
                             sell_quantity = None
+                            # Set when the split leaves this row nothing to sell:
+                            # the broker refuses a zero quantity, so sending it
+                            # would only produce a misleading generic failure.
+                            _skip_order = False
                             # Multi-row tickers sell fractionally. The FINAL row of a
                             # ticker already split THIS pass (remaining_rows==1 but
                             # ticker in pass_total_qty) must also sell from the snapshot
@@ -3235,6 +3303,20 @@ class StockTrackingAgent:
                                     pass_sold_qty[ticker] = 0
                                 available = pass_total_qty[ticker] - pass_sold_qty[ticker]
                                 sell_quantity = compute_fractional_sell_quantity(available, remaining_rows)
+                                if sell_quantity is not None and sell_quantity <= 0:
+                                    # Nothing left for this row. The broker refuses
+                                    # a zero-quantity order (a falsy quantity used
+                                    # to be read as "sell everything", which
+                                    # liquidated the whole pyramid) and this row's
+                                    # DB record is already gone, so say what needs
+                                    # reconciling instead of a generic failure.
+                                    logger.error(
+                                        f"{ticker} split leaves 0 shares for this row "
+                                        f"(available {available}, rows {remaining_rows}); "
+                                        f"no order sent — RECONCILE: the holdings row is "
+                                        f"already deleted while the shares remain at the broker"
+                                    )
+                                    _skip_order = True
                                 pass_sold_qty[ticker] += sell_quantity
                                 logger.info(
                                     f"{ticker} pyramiding fractional sell: {sell_quantity} shares "
@@ -3258,20 +3340,30 @@ class StockTrackingAgent:
                                 limit_price=current_price,
                                 reason=sell_reason,
                             )
-                            try:
-                                trade_result = await trading.execute_sell(
-                                    stock_code=ticker,
-                                    limit_price=current_price,
-                                    quantity=sell_quantity,
-                                    intent=order_intent,
-                                )
-                            except OrderOutcomeUnknown as error:
-                                self._link_position_exit_intent(
-                                    legacy_holding_id=closed_legacy_id,
-                                    account_key=stock.get("account_key"),
-                                    intent_id=error.intent_id,
-                                )
-                                raise
+                            if _skip_order:
+                                # Nothing to send; the reason was already logged
+                                # with what needs reconciling. OrderIntent.create
+                                # above is a pure constructor, so no idempotency
+                                # key was reserved for an order that never went out.
+                                trade_result = {
+                                    'success': False,
+                                    'message': 'no order sent (split left 0 shares for this row)',
+                                }
+                            else:
+                                try:
+                                    trade_result = await trading.execute_sell(
+                                        stock_code=ticker,
+                                        limit_price=current_price,
+                                        quantity=sell_quantity,
+                                        intent=order_intent,
+                                    )
+                                except OrderOutcomeUnknown as error:
+                                    self._link_position_exit_intent(
+                                        legacy_holding_id=closed_legacy_id,
+                                        account_key=stock.get("account_key"),
+                                        intent_id=error.intent_id,
+                                    )
+                                    raise
 
                             persisted_intent_id = trade_result.get("intent_id")
                             if persisted_intent_id:
@@ -3285,6 +3377,14 @@ class StockTrackingAgent:
                             logger.info(f"Actual sell successful: {trade_result['message']}")
                         else:
                             logger.error(f"Actual sell failed: {trade_result['message']}")
+                            # An explicitly refused order never left the broker, so
+                            # it must not count against the snapshot the final row
+                            # sweeps — otherwise that row asks for less than is held
+                            # and the remainder is stranded. Deliberately not done
+                            # for an unknown outcome: the shares may well be sold,
+                            # and under-selling beats double-selling.
+                            if sell_quantity is not None and ticker in pass_sold_qty:
+                                pass_sold_qty[ticker] -= sell_quantity
 
                         # Portion of this position that was actually sold, so
                         # mirroring subscribers replicate a partial (pyramiding)
@@ -3354,6 +3454,19 @@ class StockTrackingAgent:
                     )
                     self.conn.commit()
                     logger.info(f"{ticker}({company_name}) current price updated: {current_price:,.0f} KRW ({sell_reason})")
+
+            if skipped_closed_market:
+                # One loud line, not just the per-ticker errors above: this is a
+                # schedule problem the operator has to act on, and a stop-loss
+                # decided here simply did not happen.
+                logger.error(
+                    "[SELL_BLOCKED] KR 장 마감으로 %d개 종목의 매도를 시도조차 하지 못했습니다: %s "
+                    "— 토스는 정규장(09:00–15:30) 밖 주문을 체결할 수 없으므로, "
+                    "트래킹 에이전트가 정규장 안에 돌도록 크론을 조정해야 합니다 "
+                    "(현재 오후 배치는 15:40 시작).",
+                    len(skipped_closed_market),
+                    ", ".join(skipped_closed_market),
+                )
 
             return sold_stocks
 
@@ -4399,8 +4512,10 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        # Execute asyncio
-        asyncio.run(main())
+        # Propagate the result. Discarding it meant "Report path not specified"
+        # — and every other way `run()` reports failure — still exited 0, so a
+        # supervisor or an operator reading $? saw a successful trading pass.
+        sys.exit(0 if asyncio.run(main()) else 1)
     except Exception as e:
         logger.error(f"Error during program execution: {str(e)}")
         logger.error(traceback.format_exc())

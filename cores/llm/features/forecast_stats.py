@@ -30,6 +30,7 @@ still renders without the forecast overlay.
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 from pathlib import Path
 from typing import Optional
@@ -75,7 +76,16 @@ def _market_key(market: Optional[str]) -> str:
 
 
 def _db_path() -> Optional[Path]:
-    """Locate ``stock_tracking_db.sqlite``: repo root first, then a few parents."""
+    """Locate ``stock_tracking_db.sqlite``: repo root first, then a few parents.
+
+    ``STOCK_TRACKING_DB`` wins, as it does for the agents, the seller tools and
+    the sibling `trade_history` feature — otherwise one prompt could carry a
+    trade history and a base rate drawn from two different ledgers.
+    """
+    override = os.getenv("STOCK_TRACKING_DB")
+    if override:
+        candidate = Path(override)
+        return candidate if candidate.exists() else None
     here = Path(__file__).resolve()
     candidates = [here.parents[3] / _DB_NAME]  # repo root
     # Defensive: also probe the immediate ancestors in case of an unusual layout.

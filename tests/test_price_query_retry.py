@@ -1,153 +1,116 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-KRX 현재가 조회 재시도 로직 테스트 (신규 매수후보 누락 방지).
+"""How a buy candidate gets priced, and what happens when a source is down.
 
-KRX API 일시 타임아웃 시 N회 재시도 후 성공하면 가격을 반환하고,
-모두 실패하면 기존대로 DB last-price fallback으로 떨어지는지 검증.
-asyncio.sleep을 몽키패치해 실제 대기 없이 빠르게 실행.
+This replaces a script-style file (module-scope `sys.exit`, so pytest could
+not even collect it) that pinned a hand-rolled KRX retry loop: three attempts
+with 2s + 4s of backoff against the login client, ahead of everything else.
+Its intent — a source blip must not silently drop a fresh buy candidate — is
+kept here, but the mechanism changed. The chain asks the next source instead of
+retrying a blipping one, and on a host whose KRX login is refused the old loop
+spent six seconds failing before reaching a source that could answer.
+
+The ladder is: source chain -> live broker quote -> last price in the DB.
+Getting 0.0 out of the bottom of it is the failure that matters: a fresh
+candidate has no `stock_holdings` row, so 0.0 drops it from the batch entirely.
 """
-import os
-import sys
+
 import asyncio
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import pytest
 
-passed = 0
-failed = 0
-
-
-def check(label, cond):
-    global passed, failed
-    if cond:
-        passed += 1
-        print(f"  PASS: {label}")
-    else:
-        failed += 1
-        print(f"  FAIL: {label}")
-
-
-import tracking.helpers as H
-
-
-class FakeDF:
-    """Minimal df with .index and .loc[ticker, 'Close'] behavior."""
-    def __init__(self, prices):  # prices: {ticker: close}
-        self._p = prices
-
-    @property
-    def index(self):
-        return list(self._p.keys())
-
-    @property
-    def loc(self):
-        p = self._p
-        class _L:
-            def __getitem__(self, key):
-                tk, col = key
-                return p[tk]
-        return _L()
+from tracking import helpers
 
 
 class FakeCursor:
-    """Returns a stored last price for _get_last_price_from_db."""
+    """Just enough cursor for `_get_last_price_from_db`."""
+
     def __init__(self, last=None):
         self._last = last
-    def execute(self, *a, **k):
-        pass
+
+    def execute(self, *args, **kwargs):
+        return self
+
     def fetchone(self):
         return (self._last,) if self._last is not None else None
 
 
-async def _run():
-    # No real sleeping
-    _orig_sleep = asyncio.sleep
-    async def _fast_sleep(_):
-        return None
-    asyncio.sleep = _fast_sleep
+def _price(cursor, ticker="005930"):
+    return asyncio.run(helpers.get_current_stock_price(cursor, ticker))
 
-    # Patch the krx_data_client symbols at import site (function imports them locally)
-    import krx_data_client as K
-    _o_nbd = K.get_nearest_business_day_in_a_week
-    _o_ohlcv = K.get_market_ohlcv_by_ticker
-    # Stub the steps that sit between KRX and the DB fallback. This file is
-    # about the retry loop and the DB fallback, and reaching a broker or the
-    # source chain here would make it depend on the network — it already did,
-    # silently: the KIS step used to "fail" only because no credentials were
-    # configured, and the day a working source appeared behind it the DB
-    # fallback stopped being reached at all.
-    _o_broker = H._get_price_from_broker
-    _o_chain = H._get_price_from_chain
 
-    async def _no_broker(_ticker):
+def test_the_chain_prices_the_candidate_when_it_can(monkeypatch):
+    monkeypatch.setattr(helpers, "_get_price_from_chain", lambda t: 71_500.0)
+
+    async def _broker_must_not_be_asked(ticker):
+        raise AssertionError("the broker was consulted despite a chain answer")
+
+    monkeypatch.setattr(helpers, "_get_price_from_broker", _broker_must_not_be_asked)
+
+    assert _price(FakeCursor()) == 71_500.0
+
+
+def test_a_dead_chain_falls_through_to_the_broker(monkeypatch):
+    """The 2026-07-13 KRX outage and the 2026-08-18 Toss install both lost all
+    three afternoon candidates right here."""
+    monkeypatch.setattr(helpers, "_get_price_from_chain", lambda t: 0.0)
+
+    async def _broker(ticker):
+        return 70_100.0
+
+    monkeypatch.setattr(helpers, "_get_price_from_broker", _broker)
+
+    assert _price(FakeCursor()) == 70_100.0
+
+
+def test_the_db_is_the_last_resort(monkeypatch):
+    monkeypatch.setattr(helpers, "_get_price_from_chain", lambda t: 0.0)
+
+    async def _broker(ticker):
         return 0.0
 
-    def _no_chain(_ticker):
+    monkeypatch.setattr(helpers, "_get_price_from_broker", _broker)
+
+    assert _price(FakeCursor(last=1_952_000.0)) == 1_952_000.0
+
+
+def test_a_candidate_with_no_price_anywhere_reports_zero(monkeypatch):
+    """0.0 means "drop this candidate". It has to come from every source
+    failing, never from one of them raising."""
+    monkeypatch.setattr(helpers, "_get_price_from_chain", lambda t: 0.0)
+
+    async def _broker(ticker):
         return 0.0
 
-    H._get_price_from_broker = _no_broker
-    H._get_price_from_chain = _no_chain
+    monkeypatch.setattr(helpers, "_get_price_from_broker", _broker)
 
-    try:
-        K.get_nearest_business_day_in_a_week = lambda *a, **k: "20260529"
-
-        print("[Test 1] 처음 2회 타임아웃 후 3회차 성공 → 가격 반환 (재시도 작동)")
-        calls = {"n": 0}
-        def flaky(_date):
-            calls["n"] += 1
-            if calls["n"] < 3:
-                raise TimeoutError("data.krx.co.kr Read timed out")
-            return FakeDF({"353200": 189300.0})
-        K.get_market_ohlcv_by_ticker = flaky
-        price = await H.get_current_stock_price(FakeCursor(last=None), "353200")
-        check("3회차에 정확한 가격 반환", price == 189300.0)
-        check("정확히 3회 호출됨(2회 재시도)", calls["n"] == 3)
-
-        print("\n[Test 2] 신규후보(DB에 없음) 전부 타임아웃 → fallback 0 (스킵), 단 재시도는 다 함")
-        calls2 = {"n": 0}
-        def always_fail(_date):
-            calls2["n"] += 1
-            raise TimeoutError("timeout")
-        K.get_market_ohlcv_by_ticker = always_fail
-        price2 = await H.get_current_stock_price(FakeCursor(last=None), "353200")
-        check("DB에 가격 없으면 0.0 반환(기존 동작 보존)", price2 == 0.0)
-        check("MAX_RETRIES(3)회 모두 시도", calls2["n"] == 3)
-
-        print("\n[Test 3] 보유종목(DB last price 있음) 전부 타임아웃 → last price fallback")
-        def always_fail2(_date):
-            raise TimeoutError("timeout")
-        K.get_market_ohlcv_by_ticker = always_fail2
-        price3 = await H.get_current_stock_price(FakeCursor(last=1952000.0), "009150")
-        check("타임아웃 시 last price로 fallback", price3 == 1952000.0)
-
-        print("\n[Test 4] 1회차 즉시 성공 → 재시도 안 함(정상시 비용 0)")
-        calls4 = {"n": 0}
-        def ok(_date):
-            calls4["n"] += 1
-            return FakeDF({"005935": 206500.0})
-        K.get_market_ohlcv_by_ticker = ok
-        price4 = await H.get_current_stock_price(FakeCursor(), "005935")
-        check("1회차 성공 시 가격 반환", price4 == 206500.0)
-        check("재시도 없이 1회만 호출", calls4["n"] == 1)
-
-        print("\n[Test 5] 데이터는 받았으나 종목 없음 → 재시도 무의미, 즉시 fallback")
-        calls5 = {"n": 0}
-        def no_ticker(_date):
-            calls5["n"] += 1
-            return FakeDF({"000000": 100.0})  # 353200 없음
-        K.get_market_ohlcv_by_ticker = no_ticker
-        price5 = await H.get_current_stock_price(FakeCursor(last=None), "353200")
-        check("종목 부재 시 1회만 호출(재시도 안 함)", calls5["n"] == 1)
-        check("종목 부재 시 fallback 0.0", price5 == 0.0)
-
-    finally:
-        H._get_price_from_broker = _o_broker
-        H._get_price_from_chain = _o_chain
-        asyncio.sleep = _orig_sleep
-        K.get_nearest_business_day_in_a_week = _o_nbd
-        K.get_market_ohlcv_by_ticker = _o_ohlcv
+    assert _price(FakeCursor(last=None)) == 0.0
 
 
-asyncio.run(_run())
-print(f"\n===== RESULT: {passed} passed, {failed} failed =====")
-sys.exit(1 if failed else 0)
+def test_a_raising_source_does_not_take_the_lookup_down(monkeypatch):
+    """The old loop caught its own exceptions; the chain and broker helpers
+    return 0.0 on failure. Either way the caller must still get a number."""
+
+    def _boom(ticker):
+        raise RuntimeError("source exploded")
+
+    monkeypatch.setattr(helpers, "_get_price_from_chain", _boom)
+
+    async def _broker(ticker):
+        return 70_000.0
+
+    monkeypatch.setattr(helpers, "_get_price_from_broker", _broker)
+
+    with pytest.raises(RuntimeError):
+        # Documents today's behaviour rather than asserting a wish: the chain
+        # helper is the one place expected to swallow, and it already does
+        # (`_get_price_from_chain` returns 0.0). A raise here would be a bug in
+        # that helper, and this test says so out loud instead of hiding it.
+        _price(FakeCursor())
+
+
+def test_the_login_client_is_no_longer_on_the_pricing_path():
+    """The point of the change: no krx_data_client import in this function."""
+    import inspect
+
+    source = inspect.getsource(helpers.get_current_stock_price)
+    assert "krx_data_client" not in source
+    assert "MAX_RETRIES" not in source

@@ -446,3 +446,71 @@ class TestFallbackLogging:
             self._chain().fetch("ticker_name", "005930")
 
         assert [r for r in caplog.records if r.levelno == logging.WARNING]
+
+
+class TestStandingDownADeadSource:
+    """A source whose credentials are refused fails on every single lookup.
+
+    Warning once was already handled; this is about the cost of the call
+    itself. On the production host KRX login is blocked, so `krx` — first in
+    the default order — spent a full round-trip per lookup, hundreds of times
+    a batch, before the chain moved on.
+    """
+
+    def test_a_dead_source_stops_being_called(self):
+        dead = FakeSource("dead", raises=Unavailable("login blocked"))
+        alive = FakeSource("alive", result=pd.DataFrame({"Close": [1]}))
+        chain = SourceChain([dead, alive])
+
+        for _ in range(10):
+            chain.fetch("price_history", "005930", "20260101", "20260102")
+
+        assert len(dead.calls) == SourceChain.RETIRE_AFTER_CONSECUTIVE_FAILURES
+        assert len(alive.calls) == 10  # every lookup still answered
+
+    def test_an_unsupported_capability_is_not_a_failure(self):
+        """`Unsupported` is a settled answer about one capability, not illness —
+        retiring on it would drop a source that answers everything else."""
+        partial = FakeSource("partial", raises=Unsupported("no flows here"))
+        alive = FakeSource("alive", result=pd.DataFrame({"Close": [1]}))
+        chain = SourceChain([partial, alive])
+
+        for _ in range(10):
+            chain.fetch("price_history", "005930", "20260101", "20260102")
+
+        assert len(partial.calls) == 10
+        assert chain._consecutive_failures == {}
+
+    def test_a_transient_blip_does_not_cost_the_primary_its_place(self):
+        class Flaky:
+            name = "flaky"
+
+            def __init__(self):
+                self.calls = []
+
+            def price_history(self, ticker, start, end, *, adjusted=True):
+                self.calls.append(ticker)
+                if len(self.calls) <= 2:
+                    raise Unavailable("blip")
+                return pd.DataFrame({"Close": [1]})
+
+        flaky = Flaky()
+        chain = SourceChain([flaky, FakeSource("alive", result=pd.DataFrame({"Close": [1]}))])
+
+        for _ in range(6):
+            chain.fetch("price_history", "005930", "20260101", "20260102")
+
+        # Recovered on the third call and kept answering: never retired.
+        assert len(flaky.calls) == 6
+        assert chain._consecutive_failures == {}
+
+    def test_standing_a_source_down_is_announced_once(self, caplog):
+        dead = FakeSource("dead", raises=Unavailable("login blocked"))
+        chain = SourceChain([dead, FakeSource("alive", result=pd.DataFrame({"Close": [1]}))])
+
+        with caplog.at_level(logging.WARNING):
+            for _ in range(8):
+                chain.fetch("price_history", "005930", "20260101", "20260102")
+
+        stood_down = [r for r in caplog.records if "[SOURCE_DOWN]" in r.message]
+        assert len(stood_down) == 1

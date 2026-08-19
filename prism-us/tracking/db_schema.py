@@ -31,7 +31,15 @@ def _load_root_kis_auth_module():
 
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        # Mirror importlib's own cleanup. kis_auth.py opens kis_devlp.yaml while
+        # executing, so on a Toss-only install this raises — and a cached
+        # half-initialized shell would hand every later caller an AttributeError
+        # instead of the real, actionable error.
+        sys.modules.pop(module_name, None)
+        raise
     return module
 
 
@@ -55,7 +63,15 @@ def _load_root_broker_settings():
 
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        # Mirror importlib's own cleanup. kis_auth.py opens kis_devlp.yaml while
+        # executing, so on a Toss-only install this raises — and a cached
+        # half-initialized shell would hand every later caller an AttributeError
+        # instead of the real, actionable error.
+        sys.modules.pop(module_name, None)
+        raise
     return module
 
 
@@ -1101,22 +1117,37 @@ def evaluate_us_pyramid_add_gate(
     return True, f"add allowed (regime={regime}, profit={profit_pct:.2f}%, rows={existing_row_count})"
 
 
-def compute_us_fractional_sell_quantity(total_quantity: int, remaining_rows: int) -> int:
+def compute_us_fractional_sell_quantity(total_quantity, remaining_rows):
     """Shares to sell for one row when ``remaining_rows`` rows remain (US, #288).
 
-    remaining_rows <= 1 -> sell all; remaining_rows > 1 -> floor(total/remaining).
+    remaining_rows <= 1 -> sell all; remaining_rows > 1 -> split evenly.
     Recomputed live each sell so the last row sweeps the remainder.
+
+    Quantities may be fractional under Toss (`Decimal`); integral totals keep
+    the original integer arithmetic so the KIS path is unchanged. The
+    ``int(total_quantity)`` this replaces turned ``Decimal("0.44")`` into 0,
+    which read a held position as nothing to sell. Fractional splits use the
+    adapter's six-decimal ROUND_DOWN scale so an order is never rejected for
+    asking a hair more than is held.
     """
+    from decimal import Decimal, InvalidOperation, ROUND_DOWN
+
     try:
-        total = int(total_quantity)
+        total = Decimal(str(total_quantity))
         n = int(remaining_rows)
-    except (TypeError, ValueError):
-        return int(total_quantity) if total_quantity else 0
+    except (InvalidOperation, TypeError, ValueError):
+        try:
+            return int(total_quantity) if total_quantity else 0
+        except (TypeError, ValueError):
+            return 0
     if total <= 0:
         return 0
+    if total == total.to_integral_value():  # KIS/integer path: unchanged
+        total_i = int(total)
+        return total_i if n <= 1 else total_i // n
     if n <= 1:
-        return total
-    return total // n
+        return total  # sweep the exact remainder
+    return (total / n).quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
 
 
 def decide_us_sell_plan(remaining_rows: int, will_queue: bool) -> str:

@@ -24,6 +24,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Load .env before anything reads PRISM_BROKER. A fresh cron process does not
+# inherit it, and without it `selected_broker()` falls back to its default of
+# KIS — which would send a Toss install straight down the KIS inquiry path the
+# broker gate below exists to keep it off. Same reason tools/hardstop_seller.py
+# does this.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(PROJECT_ROOT / ".env")
+except Exception:
+    pass
+
 from prism_core.positions import PositionStore, account_fingerprint  # noqa: E402
 from tools.feature_status import _cron_get_all_inline_env  # noqa: E402
 
@@ -400,7 +412,29 @@ def audit_database(
 
 
 async def inquire_kis_open_sells() -> dict[str, dict[str, Any]]:
-    """Read authoritative open SELLs for every configured active KR account."""
+    """Read authoritative open SELLs for every configured active KR account.
+
+    KIS-only: this reads the KIS revisable-order inquiry and its field names
+    (`sll_buy_dvsn_cd`, `psbl_qty`), and reaches `kis_auth` through
+    `domestic.ka`. Toss has no equivalent on `BrokerPort` yet, so under any
+    other broker this reports nothing rather than auditing a broker it cannot
+    see — and, importantly, without demanding `kis_devlp.yaml` to do so.
+
+    Notices go to stderr: stdout carries the JSON report this tool exists for.
+    """
+    try:
+        from trading.brokers.settings import selected_broker, KIS
+
+        broker = selected_broker()
+    except Exception as exc:  # noqa: BLE001 - an unreadable broker is not KIS
+        print(f"[readiness] 브로커 설정 확인 실패({exc}) — 미체결 조회 스킵", file=sys.stderr)
+        return {}
+    if broker != KIS:
+        print(
+            f"[readiness] 미체결 매도 조회는 KIS 전용입니다 — broker={broker}에서는 건너뜁니다",
+            file=sys.stderr,
+        )
+        return {}
 
     from prism_core.execution_service import ExecutionService
     from trading import domestic_stock_trading as domestic

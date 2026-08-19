@@ -45,7 +45,9 @@ logger = logging.getLogger(__name__)
 
 KST = ZoneInfo("Asia/Seoul")
 
-DEFAULT_DB_PATH = "toss_dryrun.sqlite"
+# Anchored to the repo root, not the CWD: a cron started from another
+# directory used to open a fresh, empty simulated ledger.
+DEFAULT_DB_PATH = str(Path(__file__).resolve().parents[3] / "toss_dryrun.sqlite")
 DEFAULT_CASH = {"KRW": Decimal("10000000"), "USD": Decimal("10000")}
 
 # Read paths whose answers must come from the real API: market data is what

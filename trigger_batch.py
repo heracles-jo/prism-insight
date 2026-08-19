@@ -55,16 +55,75 @@ def _normalize_ticker_code(ticker) -> str:
     return ticker_code
 
 
+def _load_stock_map_file() -> dict[str, str] | None:
+    """The code -> name map `update_stock_data.py` refreshes every morning.
+
+    Reading it is free, and it is the same data the KRX call below fetches. The
+    Telegram and Kakao bots already read this file; the batch did not, so every
+    run paid for the map again.
+    """
+    import json
+    from datetime import datetime as _dt
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent / "stock_map.json"
+    try:
+        if not path.exists():
+            return None
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        mapping = payload.get("code_to_name") or {}
+        if not mapping:
+            return None
+        age_days = (_dt.now() - _dt.fromisoformat(payload["updated_at"])).days \
+            if payload.get("updated_at") else None
+        if age_days is not None and age_days > 7:
+            # Stale enough that a newly listed stock would be missing. Fall
+            # through and refresh; the per-ticker chain still backs this up.
+            logger.warning(f"stock_map.json is {age_days} days old; refetching names")
+            return None
+        return {_normalize_ticker_code(code): str(name) for code, name in mapping.items()}
+    except Exception as exc:  # noqa: BLE001 - a bad cache is just a cache miss
+        logger.warning(f"stock_map.json unreadable ({exc}); refetching names")
+        return None
+
+
 def _get_ticker_name_map() -> dict[str, str]:
-    """Fetch all ticker names once per process to avoid repeated KRX calls."""
+    """All ticker names, once per process.
+
+    Order matters for a reason found by running the morning batch against a
+    blocked KRX account: the client authenticates through a real browser, the
+    data page bounces it back to the login form, and it retries with 20-30s
+    backoff. That is minutes of the batch's critical path spent to end up with
+    the empty map this used to return — while `stock_map.json`, refreshed at
+    07:00 by update_stock_data.py, held the same names all along.
+    """
     global _TICKER_NAME_CACHE
-    if _TICKER_NAME_CACHE is None:
+    if _TICKER_NAME_CACHE is not None:
+        return _TICKER_NAME_CACHE
+
+    cached = _load_stock_map_file()
+    if cached:
+        logger.info(f"Ticker names from stock_map.json: {len(cached)} stocks")
+        _TICKER_NAME_CACHE = cached
+        return _TICKER_NAME_CACHE
+
+    try:
+        client = _get_client()
+        names = client.get_market_ticker_name(market="ALL")
+        _TICKER_NAME_CACHE = {_normalize_ticker_code(ticker): str(name) for ticker, name in names.items()}
+    except Exception as e:
+        logger.warning(f"KRX ticker name lookup failed ({e}); trying Naver")
         try:
-            client = _get_client()
-            names = client.get_market_ticker_name(market="ALL")
-            _TICKER_NAME_CACHE = {_normalize_ticker_code(ticker): str(name) for ticker, name in names.items()}
-        except Exception as e:
-            logger.warning(f"KRX ticker name lookup failed; using ticker codes as names: {e}")
+            from cores.naver_market_snapshot import fetch_naver_ticker_names
+
+            _TICKER_NAME_CACHE = {
+                _normalize_ticker_code(code): name
+                for code, name in fetch_naver_ticker_names().items()
+            }
+            logger.info(f"Ticker names from Naver: {len(_TICKER_NAME_CACHE)} stocks")
+        except Exception as naver_exc:  # noqa: BLE001 - names are not worth failing the batch
+            logger.warning(f"Naver ticker names unavailable ({naver_exc}); using ticker codes as names")
             _TICKER_NAME_CACHE = {}
     return _TICKER_NAME_CACHE
 
@@ -276,45 +335,78 @@ def get_market_cap_df(trade_date: str, market: str = "ALL") -> pd.DataFrame:
     return cap_df
 
 
+def _kis_snapshot_usable() -> bool:
+    """Whether a KIS snapshot attempt can plausibly succeed.
+
+    The Naver fallback below already covers failure, so this is not about
+    correctness — it is about not spending a guaranteed round-trip and a
+    warning line on every run of an install that has no KIS credentials at all.
+
+    A Toss install can still opt in by naming `kis` in
+    `PRISM_MARKET_DATA_SOURCES`, so the broker alone is not the answer.
+    """
+    try:
+        from trading.brokers.settings import selected_broker, KIS
+
+        if selected_broker() == KIS:
+            return True
+    except Exception:  # noqa: BLE001 - fall through to the source list
+        pass
+    sources = os.getenv("PRISM_MARKET_DATA_SOURCES", "")
+    return "kis" in {s.strip().lower() for s in sources.split(",") if s.strip()}
+
+
 def load_market_snapshot_bundle(trade_date: str) -> MarketSnapshotBundle:
     """Load current KIS quotes plus previous OPEN API data, or Naver fallback."""
-    try:
-        bundle = build_kis_openapi_snapshot_bundle(trade_date)
+    # Why it fell through to Naver, for the error below. "not configured" is a
+    # state, not a failure, so it is not an exception.
+    primary_exc: object = "KIS not configured"
+    if not _kis_snapshot_usable():
         logger.info(
-            "[MARKET-DATA] source=KIS+KRX_OPENAPI stocks=%d prev_date=%s cap_rows=%d",
-            len(bundle.snapshot),
-            bundle.prev_date,
-            len(bundle.cap_df),
+            "[MARKET-DATA] KIS is not configured for this install; "
+            "using the Naver snapshot directly"
         )
-        return bundle
-    except Exception as primary_exc:
-        logger.warning(
-            "[MARKET-DATA] KIS+OPENAPI bundle failed; switching to Naver fallback: %s",
-            primary_exc,
-        )
+    else:
         try:
-            bundle = fetch_naver_snapshot_bundle(
-                trade_date,
-                detail_min_amount=SCREENING_MIN_TRADE_VALUE,
+            bundle = build_kis_openapi_snapshot_bundle(trade_date)
+            logger.info(
+                "[MARKET-DATA] source=KIS+KRX_OPENAPI stocks=%d prev_date=%s cap_rows=%d",
+                len(bundle.snapshot),
+                bundle.prev_date,
+                len(bundle.cap_df),
             )
-        except Exception as naver_exc:
-            logger.error(
-                "[MARKET-DATA] both KIS+OPENAPI and Naver snapshot sources failed: "
-                "primary=%s naver=%s",
-                primary_exc,
-                naver_exc,
+            return bundle
+        except Exception as exc:
+            primary_exc = exc
+            logger.warning(
+                "[MARKET-DATA] KIS+OPENAPI bundle failed; switching to Naver fallback: %s",
+                exc,
             )
-            raise MarketSnapshotUnavailableError(
-                f"Market snapshot unavailable from KIS+OPENAPI and Naver: {naver_exc}"
-            ) from naver_exc
 
-        logger.warning(
-            "[MARKET-DATA] source=NAVER_FALLBACK stocks=%d prev_date=%s cap_rows=%d",
-            len(bundle.snapshot),
-            bundle.prev_date,
-            len(bundle.cap_df),
+    try:
+        bundle = fetch_naver_snapshot_bundle(
+            trade_date,
+            detail_min_amount=SCREENING_MIN_TRADE_VALUE,
         )
-        return bundle
+    except Exception as naver_exc:
+        logger.error(
+            "[MARKET-DATA] both KIS+OPENAPI and Naver snapshot sources failed: "
+            "primary=%s naver=%s",
+            primary_exc,
+            naver_exc,
+        )
+        raise MarketSnapshotUnavailableError(
+            f"Market snapshot unavailable from KIS+OPENAPI and Naver: {naver_exc}"
+        ) from naver_exc
+
+    logger.warning(
+        "[MARKET-DATA] source=NAVER_FALLBACK stocks=%d prev_date=%s cap_rows=%d",
+        len(bundle.snapshot),
+        bundle.prev_date,
+        len(bundle.cap_df),
+    )
+    return bundle
+
 
 def filter_low_liquidity(df: pd.DataFrame, threshold: float = 0.2) -> pd.DataFrame:
     """
@@ -703,6 +795,14 @@ def trigger_morning_volume_surge(trade_date: str, snapshot: pd.DataFrame, prev_s
 
     # Apply absolute criteria (raised to 10B KRW trade value)
     snap = apply_absolute_filters(snap, min_value=SCREENING_MIN_TRADE_VALUE)
+    if snap.empty:
+        # Arithmetic against `prev` below aligns on the index union, which
+        # on an empty frame expands it back to the full universe with the
+        # original columns left empty — the frame then compares two columns
+        # of different lengths and raises. Three of the other triggers already
+        # guard here; this one did not.
+        logger.warning("No stocks after absolute criteria filtering")
+        return pd.DataFrame()
 
     # Calculate volume ratio
     snap["volume_ratio"] = snap["Volume"] / prev["Volume"].replace(0, np.nan)
@@ -776,6 +876,14 @@ def trigger_morning_gap_up_momentum(trade_date: str, snapshot: pd.DataFrame, pre
 
     # Apply absolute criteria (raised to 10B KRW trade value)
     snap = apply_absolute_filters(snap, min_value=SCREENING_MIN_TRADE_VALUE)
+    if snap.empty:
+        # Arithmetic against `prev` below aligns on the index union, which
+        # on an empty frame expands it back to the full universe with the
+        # original columns left empty — the frame then compares two columns
+        # of different lengths and raises. Three of the other triggers already
+        # guard here; this one did not.
+        logger.warning("No stocks after absolute criteria filtering")
+        return pd.DataFrame()
 
     # Calculate gap rate
     snap["gap_up_rate"] = (snap["Open"] / prev["Close"] - 1) * 100
@@ -978,6 +1086,14 @@ def trigger_afternoon_daily_rise_top(trade_date: str, snapshot: pd.DataFrame, pr
 
     # Apply absolute criteria (raised to 10B KRW trade value)
     snap = apply_absolute_filters(snap.copy(), min_value=SCREENING_MIN_TRADE_VALUE)
+    if snap.empty:
+        # Arithmetic against `prev` below aligns on the index union, which
+        # on an empty frame expands it back to the full universe with the
+        # original columns left empty — the frame then compares two columns
+        # of different lengths and raises. Three of the other triggers already
+        # guard here; this one did not.
+        logger.warning("No stocks after absolute criteria filtering")
+        return pd.DataFrame()
 
     # Calculate two types of change rates
     snap["intraday_change_rate"] = (snap["Close"] / snap["Open"] - 1) * 100  # Current vs opening price
@@ -1030,6 +1146,14 @@ def trigger_afternoon_closing_strength(trade_date: str, snapshot: pd.DataFrame, 
 
     # Apply absolute criteria (raised to 10B KRW trade value)
     snap = apply_absolute_filters(snap, min_value=SCREENING_MIN_TRADE_VALUE)
+    if snap.empty:
+        # Arithmetic against `prev` below aligns on the index union, which
+        # on an empty frame expands it back to the full universe with the
+        # original columns left empty — the frame then compares two columns
+        # of different lengths and raises. Three of the other triggers already
+        # guard here; this one did not.
+        logger.warning("No stocks after absolute criteria filtering")
+        return pd.DataFrame()
 
     # Calculate closing strength (closer to high = closer to 1)
     snap["closing_strength"] = 0.0  # Set default value
@@ -1109,6 +1233,14 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
 
     # Apply absolute criteria (raised to 10B KRW trade value)
     snap = apply_absolute_filters(snap, min_value=SCREENING_MIN_TRADE_VALUE)
+    if snap.empty:
+        # Arithmetic against `prev` below aligns on the index union, which
+        # on an empty frame expands it back to the full universe with the
+        # original columns left empty — the frame then compares two columns
+        # of different lengths and raises. Three of the other triggers already
+        # guard here; this one did not.
+        logger.warning("No stocks after absolute criteria filtering")
+        return pd.DataFrame()
 
     # Calculate volume increase rate
     snap["volume_increase_rate"] = (snap["Volume"] / prev["Volume"].replace(0, np.nan) - 1) * 100
@@ -1329,6 +1461,12 @@ def trigger_contrarian_value(trade_date: str, snapshot: pd.DataFrame,
 
     # Absolute filters (100억원)
     snap = apply_absolute_filters(snap, min_value=SCREENING_MIN_TRADE_VALUE)
+    if snap.empty:
+        # See the identical guard in the other triggers: the arithmetic below
+        # aligns against `prev`, which on an empty frame expands it back to the
+        # full universe with the original columns left empty.
+        logger.warning("No stocks after absolute criteria filtering")
+        return pd.DataFrame()
 
     # Filter rising stocks today (Close > Open) — positive recovery signal
     snap["DailyChange"] = ((snap["Close"] - prev["Close"]) / prev["Close"]) * 100

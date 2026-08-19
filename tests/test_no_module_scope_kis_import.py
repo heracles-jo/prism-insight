@@ -35,6 +35,8 @@ from pathlib import Path
 
 import pytest
 
+from messaging.publish_guard import DISABLE_ENV_VAR as _PUBLISH_KILL_SWITCH
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 KIS_CONFIG = REPO_ROOT / "trading" / "config" / "kis_devlp.yaml"
 
@@ -47,6 +49,18 @@ KIS_MODULES = {
     "trading.domestic_stock_trading",
     "us_stock_trading",
     "trading.us_stock_trading",
+}
+
+# Names KIS modules get registered under in `sys.modules` when loaded by file
+# path instead of imported. `spec_from_file_location("kis_auth", ...)` does not
+# create a `trading.kis_auth` entry, which is how the US tracking agent's
+# module-scope load stayed invisible to the census until Phase 1 of the
+# migration audit (.claude/PRPs/prds/full-migration-audit.prd.md).
+KIS_MODULE_ALIASES = {
+    "trading.kis_auth",              # the normal import path
+    "kis_auth",                      # prism-us/us_stock_tracking_agent.py:195
+    "prism_root_trading_kis_auth",   # prism-us/tracking/db_schema.py loader
+    "prism_us_stock_trading",        # generate_us_dashboard_json / gcp subscriber
 }
 
 # Code that is legitimately KIS-specific: it exists only to talk to KIS, so
@@ -81,6 +95,20 @@ ENTRY_POINTS = [
     "prism_core.execution_service",
     "trading.brokers.factory",
     "cores.market_data",
+]
+
+# prism-us entry points run as scripts from prism-us/, so they import as bare
+# module names with that directory on sys.path (`_probe_import(us_path=True)`).
+# us_stock_tracking_agent is a known offender until Phase 2 of the migration
+# audit: it loads trading/kis_auth.py by file path at module scope, under the
+# alias `kis_auth`, which the census's old single-key check could not see.
+US_ENTRY_POINTS = [
+    "us_stock_tracking_agent",
+    "us_trigger_batch",
+    "us_stock_analysis_orchestrator",
+    "us_pending_order_batch",
+    "us_performance_tracker_batch",
+    "us_telegram_summary_agent",
 ]
 
 
@@ -143,6 +171,83 @@ def test_no_production_module_imports_kis_at_module_scope():
     )
 
 
+def _module_scope_calls(tree: ast.Module):
+    """Yield (lineno, call) for calls that run at import time.
+
+    Same walk as `_module_scope_imports`, for the loader idiom the import scan
+    cannot see: `spec_from_file_location(...)` is a call, not an import
+    statement, yet it executes the target module all the same.
+    """
+    pending = list(tree.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.Try, ast.If, ast.With)):
+            for attr in ("body", "orelse", "finalbody", "handlers"):
+                pending.extend(getattr(node, attr, None) or [])
+        elif isinstance(node, ast.ExceptHandler):
+            pending.extend(node.body)
+        elif isinstance(node, (ast.Expr, ast.Assign, ast.AnnAssign)):
+            for call in ast.walk(node):
+                if isinstance(call, ast.Call):
+                    yield node.lineno, call
+
+
+def _loads_kis_by_path(call: ast.Call) -> bool:
+    func = call.func
+    name = getattr(func, "attr", None) or getattr(func, "id", None)
+    if name != "spec_from_file_location":
+        return False
+    return any(
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and ("kis_auth" in node.value or "us_stock_trading" in node.value)
+        for node in ast.walk(call)
+    )
+
+
+# Frozen list of current offenders — do not add to it. Each entry names the
+# migration-audit phase that removes it; a fixed file left in this set fails
+# the stale check below, which is what forces the list to shrink.
+KNOWN_PATH_LOAD_OFFENDERS: set[str] = set()
+
+
+def test_no_module_scope_kis_load_by_file_path():
+    """The loader idiom must obey the same rule as the import statement.
+
+    `prism-us/tracking/db_schema.py` also loads kis_auth by path, but inside a
+    function that `primary_account_scope()` only calls on the KIS branch — that
+    is the sanctioned shape, and it passes here because the load is not at
+    module scope.
+    """
+    found = []
+    for rel in _tracked_python_files():
+        path = REPO_ROOT / rel
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for lineno, call in _module_scope_calls(tree):
+            if _loads_kis_by_path(call):
+                found.append((rel, lineno))
+
+    found_paths = {rel for rel, _ in found}
+    stale = KNOWN_PATH_LOAD_OFFENDERS - found_paths
+    assert not stale, (
+        "fixed but still allowlisted — remove from KNOWN_PATH_LOAD_OFFENDERS: "
+        + ", ".join(sorted(stale))
+    )
+
+    new = [
+        f"{rel}:{lineno}" for rel, lineno in found
+        if rel not in KNOWN_PATH_LOAD_OFFENDERS
+    ]
+    assert not new, (
+        "these load a KIS module by file path at module scope, which the import "
+        "census cannot see and which reads kis_devlp.yaml on any install:\n  "
+        + "\n  ".join(sorted(new))
+    )
+
+
 @contextmanager
 def _kis_config_hidden():
     """Move kis_devlp.yaml aside for the duration of the block, then put it back.
@@ -164,26 +269,57 @@ def _kis_config_hidden():
         shutil.rmtree(stash_dir, ignore_errors=True)
 
 
-def _probe_import(module: str) -> subprocess.CompletedProcess:
+def _probe_import(module: str, *, us_path: bool = False) -> subprocess.CompletedProcess:
     """Import `module` under PRISM_BROKER=toss in a clean interpreter.
 
     A subprocess, not an import here, because a module already in this process's
-    `sys.modules` would mask the very thing under test.
+    `sys.modules` would mask the very thing under test. The check covers every
+    name in KIS_MODULE_ALIASES, not just `trading.kis_auth`, because a by-path
+    load registers under whatever name the loader chose.
+
+    `us_path=True` prepends `prism-us/` to `sys.path`, which is how those
+    modules are actually run (as scripts from that directory).
     """
-    probe = (
-        f"import {module}\n"
-        "import sys\n"
-        "print('KIS_LOADED' if 'trading.kis_auth' in sys.modules else 'CLEAN')\n"
+    pre = (
+        f"import sys; sys.path.insert(0, {str(REPO_ROOT / 'prism-us')!r})\n"
+        if us_path else ""
     )
+    probe = (
+        pre
+        + f"import {module}\n"
+        + "import sys\n"
+        + f"hits = sorted(m for m in {sorted(KIS_MODULE_ALIASES)!r} if m in sys.modules)\n"
+        + "print('KIS_LOADED:' + ','.join(hits) if hits else 'CLEAN')\n"
+    )
+    env = {**os.environ, "PRISM_BROKER": "toss", "PRISM_TRADING_MODE": "demo"}
+    # Importing a tracking agent loads the production .env; make sure a probe
+    # can never publish a live trading signal (same rule as prism-us/tests).
+    env[_PUBLISH_KILL_SWITCH] = "1"
     return subprocess.run(
         [sys.executable, "-c", probe],
         cwd=str(REPO_ROOT),
-        env={**os.environ, "PRISM_BROKER": "toss", "PRISM_TRADING_MODE": "demo"},
+        env=env,
         capture_output=True, text=True, timeout=300,
     )
 
 
-@pytest.mark.parametrize("module", ENTRY_POINTS)
+# Empty since Phase 3: the US dashboard's module-scope path load of
+# us_stock_trading (which dragged kis_auth in under its alias whenever a
+# leftover kis_devlp.yaml was present) is gone — it asks the factory now.
+_LEFTOVER_CONFIG_XFAIL: dict[str, str] = {}
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        pytest.param(
+            m,
+            marks=pytest.mark.xfail(strict=True, reason=_LEFTOVER_CONFIG_XFAIL[m]),
+        )
+        if m in _LEFTOVER_CONFIG_XFAIL else m
+        for m in ENTRY_POINTS
+    ],
+)
 def test_entry_point_ignores_a_leftover_kis_config(module):
     """Switching to Toss must stop the KIS reads, even with the old file present.
 
@@ -198,9 +334,9 @@ def test_entry_point_ignores_a_leftover_kis_config(module):
         f"{module} failed to import with PRISM_BROKER=toss:\n{result.stderr[-2000:]}"
     )
     assert "CLEAN" in result.stdout, (
-        f"{module} loaded trading.kis_auth under PRISM_BROKER=toss. That module "
-        "reads kis_devlp.yaml at import time, so this is a KIS credential read "
-        "on every Toss startup."
+        f"{module} loaded a KIS module under PRISM_BROKER=toss "
+        f"({result.stdout.strip()}). trading/kis_auth.py reads kis_devlp.yaml "
+        "at import time, so this is a KIS credential read on every Toss startup."
     )
 
 
@@ -220,7 +356,38 @@ def test_entry_point_starts_with_no_kis_config_at_all(module):
         f"\n{result.stderr[-2000:]}"
     )
     assert "CLEAN" in result.stdout, (
-        f"{module} loaded trading.kis_auth on an install with no KIS config."
+        f"{module} loaded a KIS module on an install with no KIS config "
+        f"({result.stdout.strip()})."
+    )
+
+
+@pytest.mark.parametrize("module", US_ENTRY_POINTS)
+def test_us_entry_point_ignores_a_leftover_kis_config(module):
+    """The census, extended to the US module (migration audit Phase 1)."""
+    result = _probe_import(module, us_path=True)
+
+    assert result.returncode == 0, (
+        f"{module} failed to import with PRISM_BROKER=toss:\n{result.stderr[-2000:]}"
+    )
+    assert "CLEAN" in result.stdout, (
+        f"{module} loaded a KIS module under PRISM_BROKER=toss "
+        f"({result.stdout.strip()})."
+    )
+
+
+@pytest.mark.parametrize("module", US_ENTRY_POINTS)
+def test_us_entry_point_starts_with_no_kis_config_at_all(module):
+    """A Toss-only install must be able to run the US side too."""
+    with _kis_config_hidden():
+        result = _probe_import(module, us_path=True)
+
+    assert result.returncode == 0, (
+        f"{module} failed to import on a Toss-only install (no kis_devlp.yaml):"
+        f"\n{result.stderr[-2000:]}"
+    )
+    assert "CLEAN" in result.stdout, (
+        f"{module} loaded a KIS module on an install with no KIS config "
+        f"({result.stdout.strip()})."
     )
 
 

@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide for PRISM-INSIGHT
 
-> **Version**: 2.21.2 | **Updated**: 2026-08-18
+> **Version**: 2.22.0 | **Updated**: 2026-08-19
 
 ## Quick Overview
 
@@ -312,6 +312,11 @@ than being queued, since there is nowhere to queue it.
 | 토스인데 기동 시 `kis_devlp.yaml` 없다고 죽음 | v2.21.2에서 해결. 진입점이 KIS를 지연 임포트하며, 매매 설정은 `toss_config.yaml`에서 읽음 |
 | 토스인데 마이그레이션이 KIS 계좌를 요구 | v2.21.2에서 해결. 구 스키마 DB는 `account_seq`로 스코프를 만듦 → `docs/TOSS_BROKER_SETUP.md` §2 |
 | 토스인데 대시보드·텔레그램에 보유 종목 없음 | v2.21.2에서 해결. 가용성 판정이 KIS 임포트 가능 여부를 묻던 버그 |
+| 토스인데 US 매도가 한 번도 안 됨 | v2.22.0 해결. `execute_sell(ticker=...)`가 `TossBroker.async_sell_stock(stock_code, ...)`에 닿지 못해 TypeError. 종목은 **위치 인자**로 넘긴다(`BrokerPort` 규약) |
+| 체결됐는데 `OrderOutcomeUnknown`으로 기록됨 | v2.22.0 해결. 소수 수량 `Decimal`이 sqlite 바인딩에서 실패하던 것. `_normalize_quantity()`가 요청·응답 양쪽을 정규화 |
+| `[SELL_BLOCKED]` 로그가 뜬다 | 배치가 장 마감 후에 매도 루프에 도달했다는 뜻. v2.22.0에서 KR 오후 배치 15:40→**14:00**, US 오후 배치 06:30→**09:10**(토스 US 세션 공백 07:00–09:00 회피)로 조정. 여전히 뜨면 파이프라인이 예상(~40분)보다 오래 걸리는 것이니 로그로 실제 소요를 재고 시각을 더 앞당길 것 |
+| `toss_config.yaml`에서 매수 금액을 바꿔도 안 먹힘 | v2.22.0 해결. 팩토리가 env만 보던 것을 `settings.buy_amount()` 체인(env→브로커 파일→기본값)으로 교체 |
+| 토스인데 대시보드가 demo로 표기 | v2.22.0 해결. 모드를 `kis_devlp.yaml`에서 읽던 것을 `configured_mode()`로 교체 — 실계좌면 이제 real로 나온다 |
 | 로컬 `.env` 때문에 KIS 테스트 실패 | `tests/conftest.py`가 브로커 환경변수를 테스트마다 초기화함 (일부 테스트가 임포트 시 `load_dotenv()` 호출) |
 | Telegram `chat not found` | 봇을 채널 **관리자**로 추가하고 "메시지 게시" 권한 부여 필요 |
 
@@ -343,6 +348,7 @@ test: Tests
 
 | Ver | Date | Changes |
 |-----|------|---------|
+| 2.22.0 | 2026-08-19 | **마이그레이션 완결성 감사 (Phase 1–3)** - 토스 전환·KRX 탈피가 미완인 채 실계좌 운영에 들어간 상태를 전수 점검. **탐지 우선**: 알려진 결함을 strict xfail·동결 allowlist로 고정하는 트립와이어 7종 추가(별칭 census, `spec_from_file_location` AST 규칙, `kis_devlp.yaml` 직접 읽기, KIS 응답 형태 누출, BrokerPort 계약, 설정 키 사장, 위치 인자 규약). **실금전 P0**: `toss_config.yaml`의 매수 금액이 주문 경로에 도달하지 않던 문제(`settings.buy_amount()` 체인 연결), TIER0 강제청산 감지의 조용한 실패, US 소수점 매도 불가(`int(Decimal('0.44'))==0`), DB 경로 cwd 의존, US 에이전트 모듈 스코프 KIS 로드. **Toss US 주문 경로 복구**: 인자 철자 불일치로 주문이 브로커에 닿지 못하던 것(`ticker=` vs `stock_code`), 체결 응답 `Decimal`의 sqlite 바인딩 실패, 행 삭제 선행으로 인한 포지션 손실(세션 선검증·누적 롤백), quantity 컬럼 `INTEGER`→`TEXT` 마이그레이션(FK-safe, fail-open). **KIS 잔재 제거**: 대시보드 2종(모드 오표기·빈 포트폴리오), stance_mark 사문 임포트, readiness·archive enricher 브로커 게이트, 스냅샷 조건부화, messaging 구독자 KIS 전용 선언. 코드 리뷰 5라운드로 회귀 2건 포함 30여 건 교정. **미해결(운영 조치)**: KR 오후 배치가 정규장 밖이라 토스에서 매도 불가 → 크론 조정 필요, `us_stock_tracking_agent` cores 섀도잉으로 클린 임포트 불가(Phase 5) |
 | 2.21.2 | 2026-08-18 | **토스 전용 기동** - `PRISM_BROKER=toss`인데도 기동 시 KIS 설정 파일을 요구하던 문제 해결. `trading/kis_auth.py`가 모듈 스코프에서 `kis_devlp.yaml`을 여는 탓에 `stock_tracking_agent`·`portfolio_telegram_reporter`·`generate_dashboard_json`·`weekly_insight_report`·`generate_us_dashboard_json` 5개 진입점이 임포트 단계에서 즉사 → 지연 임포트로 전환. 매매 설정(`default_unit_amount`·`auto_trading`·`default_mode`)을 브로커별 설정 파일에서 읽는 `trading/brokers/settings.trading_settings()` 도입. 다중계좌 마이그레이션이 계좌 스코프를 KIS에 직접 묻던 것을 브로커 인식 `primary_account_scope()`로 교체(구 스키마 DB를 들고 갈아탄 설치가 `kis_devlp.yaml` 생성을 요구받던 문제). 오류 안내는 `broker_config_hint()`로 실제 선택된 브로커 파일을 가리킴. **대시보드·텔레그램 가용성 판정 버그 수정** — "KIS 모듈이 임포트되나"를 실거래 데이터 가용성의 대리로 써서 토스에서 빈 포트폴리오·US 포지션 누락이 발생하던 것을 팩토리 질의로 교체. 재발 방지 tripwire 추가(AST 모듈 스코프 검사 + 진입점 임포트 인구조사). 가이드 → `docs/TOSS_BROKER_SETUP.md` §2 |
 | 2.21.1 | 2026-08-18 | **토스 US 소수점 주식 지원** - 어댑터가 보유 수량을 정수로 절삭해 1주 미만 포지션이 포트폴리오에서 사라지고 `FLAT`으로 보고되던 버그 수정(실계좌 5종목 중 4종목 소실). 수량을 `Decimal`로 처리(`float`은 전량 매도 시 잔량을 남김), 소수 매도는 시장가·6자리 내림, 1주 미만 예산은 `orderAmount` 금액 매수로 전환. **소수점 거래 창은 정규장 종료 1시간 전까지**라, 창 밖에서는 1주 이상만 정수 부분 매도(잔여는 `residual_quantity`로 보고)하고 1주 미만은 매도 불가. KR은 정수 유지(토스가 국내 소수점 주문을 거부). 가이드 → `docs/TOSS_BROKER_SETUP.md` §9 |
 | 2.21.0 | 2026-08-17 | **토스증권 브로커 지원 (선택형)** - `PRISM_BROKER=kis\|toss` 설치 단위 전역 전환, 호출측 무수정. `trading/brokers/` 브로커 추상화(`BrokerPort`) 도입 후 KIS를 첫 어댑터로 이전(동작 무변경), 토스 OAuth2·레이트리밋·재시도 전송 계층, **모의투자 서버 부재를 메우는 로컬 dry-run 시뮬레이터**(주문은 HTTP 경계에서 default-deny 차단), KR/US 매매 어댑터, `cores/market_data/toss_source.py` 시세 소스(기본 순서 미포함, opt-in). 토스는 예약주문·KR 종가주문 미지원 → `BrokerUnsupported`. US는 4개 세션(**데이마켓 09:00–16:50 KST 포함**)으로 한국 시간대에도 매매 가능. 설정 가이드 → `docs/TOSS_BROKER_SETUP.md` |

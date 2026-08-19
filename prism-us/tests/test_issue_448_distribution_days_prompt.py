@@ -77,27 +77,9 @@ for _n in [
 ]:
     sys.modules.setdefault(_n, MagicMock())
 
-# ---------------------------------------------------------------------------
-# Prevent trading/kis_auth.py from executing at us_stock_tracking_agent import
-# time.  The agent loads it by file path:
-#   spec_from_file_location("kis_auth", PROJECT_ROOT / "trading/kis_auth.py")
-#   exec_module(ka)   ← opens a YAML config absent from this worktree → FileNotFoundError
-# Patching spec_from_file_location to return a no-op spec for that path stops
-# exec_module from running the real file.  All other calls pass through.
-# ---------------------------------------------------------------------------
-_real_spec_from_file_location = importlib.util.spec_from_file_location
-
-
-def _kis_auth_safe_spec(name, location=None, *args, **kwargs):
-    if location is not None and "kis_auth" in str(location):
-        stub = MagicMock()
-        stub.name = name
-        stub.loader.exec_module = lambda m: None  # no-op: skip YAML config read
-        return stub
-    return _real_spec_from_file_location(name, location, *args, **kwargs)
-
-
-importlib.util.spec_from_file_location = _kis_auth_safe_spec
+# The spec_from_file_location monkeypatch that used to sit here is gone: the
+# agent no longer executes trading/kis_auth.py at import time (it loads it on
+# demand in _kis_auth(), audit P0 #5), so there is nothing to neuter.
 
 
 def _load_root_regime(module_name: str = "prism_root_regime_policy_test"):

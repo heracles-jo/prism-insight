@@ -262,3 +262,52 @@ def pytest_collection_modifyitems(config, items):
         # Skip network tests if SKIP_NETWORK_TESTS is set
         if "network" in item.keywords and os.getenv("SKIP_NETWORK_TESTS"):
             item.add_marker(skip_network)
+
+
+# =============================================================================
+# Broker environment isolation (mirrors the repo-root tests/conftest.py)
+# =============================================================================
+# The US suite runs from prism-us/, so the root conftest is not guaranteed to
+# be loaded and a developer's `.env` (e.g. PRISM_BROKER=toss) would otherwise
+# decide what these tests assert. Same rule as the root conftest: clear the
+# broker variables before every test; a test that cares about a particular
+# broker sets it explicitly with monkeypatch.setenv.
+
+_BROKER_ENV = (
+    "PRISM_BROKER",
+    "PRISM_TRADING_MODE",
+    "PRISM_BUY_AMOUNT_KRW",
+    "PRISM_BUY_AMOUNT_USD",
+    "TOSS_CLIENT_ID",
+    "TOSS_CLIENT_SECRET",
+    "TOSS_ACCOUNT_SEQ",
+    "TOSS_BASE_URL",
+    "PRISM_MARKET_DATA_SOURCES",
+)
+
+
+@pytest.fixture(autouse=True)
+def _neutral_broker_env(monkeypatch):
+    """Default every test to the unconfigured state: KIS, demo, no Toss."""
+    for name in _BROKER_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+    _reset_market_data_chain()
+    yield
+    _reset_market_data_chain()
+
+
+def _reset_market_data_chain():
+    """Drop the cached source chain, if this suite can even see it.
+
+    Currently it cannot: prism-us sits ahead of the project root on sys.path,
+    so `cores` resolves to prism-us/cores, which has no market_data submodule.
+    The narrow except records that rather than hiding it — a broader one also
+    swallowed real failures. No US test reaches the root chain today; this
+    starts working on its own once the cores shadowing is resolved.
+    """
+    try:
+        from cores.market_data import set_default_chain
+    except ModuleNotFoundError:
+        return
+    set_default_chain(None)

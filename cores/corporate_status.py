@@ -83,6 +83,25 @@ async def fetch_status_codes(tickers, account_name: Optional[str] = None) -> dic
     uniq = [str(t).strip() for t in (tickers or []) if str(t or "").strip()]
     if not uniq:
         return out
+
+    # iscd_stat_cls_code는 KIS 시세 응답의 필드라 이 탐지는 KIS 전용이다.
+    # 브로커 게이트 없이 KIS 임포트를 시도하면 Toss 설치에서 아래 except가
+    # 조용히 {}를 돌려줘 TIER0 자동탐지가 꺼진 사실이 어디에도 남지 않았다.
+    # 허용목록 방향(KIS일 때만 진행): 미인식 브로커나 미래의 제3 브로커가
+    # KIS 직행 경로로 떨어지지 않게 하고, never-raises 계약도 지킨다.
+    try:
+        from trading.brokers.settings import selected_broker, KIS
+        broker = selected_broker()
+    except Exception as e:
+        logger.warning(f"브로커 설정 확인 실패({e}) — 종목상태코드 prefetch 스킵")
+        return out
+    if broker != KIS:
+        logger.warning(
+            f"종목상태코드 자동탐지는 KIS 전용입니다 — broker={broker}에서는 건너뜁니다 "
+            "(상장폐지/거래정지 TIER0 자동탐지 비활성, 매도 본로직은 정상)"
+        )
+        return out
+
     try:
         from trading.domestic_stock_trading import AsyncTradingContext
         async with AsyncTradingContext(account_name=account_name) as trading:

@@ -49,7 +49,7 @@ USER_HOME="${HOME:-/home/$(whoami)}"
 # 실행 시간 설정 (한국 시간 기준)
 # =============================================================================
 MORNING_BATCH_TIME="30 9"       # 오전 9시 30분
-AFTERNOON_BATCH_TIME="40 15"    # 오후 3시 40분
+AFTERNOON_BATCH_TIME="0 14"     # 오후 2시 (매도 주문이 15:30 정규장 마감 전에 나가도록)
 DATA_UPDATE_TIME="0 7"          # 오전 7시
 LOG_CLEANUP_TIME="0 3"          # 오전 3시
 PORTFOLIO_REPORT_TIME="0 18"    # 오후 6시

@@ -104,8 +104,8 @@ def _to_int(value: Any, default: int, key: str) -> int:
         return default
 
 
-def trading_settings() -> dict[str, Any]:
-    """Trading settings from the configured broker's own file.
+def trading_settings(broker: str | None = None) -> dict[str, Any]:
+    """Trading settings from a broker's own file — `broker`, or the configured one.
 
     Never raises and never requires a file. These values all have defaults, so a
     missing or unreadable config is a reason to fall back, not to refuse to
@@ -118,7 +118,8 @@ def trading_settings() -> dict[str, Any]:
     settings = dict(_TRADING_DEFAULTS)
 
     try:
-        source = TOSS_CONFIG_FILE if selected_broker() == TOSS else KIS_CONFIG_FILE
+        resolved = broker.strip().lower() if broker else selected_broker()
+        source = TOSS_CONFIG_FILE if resolved == TOSS else KIS_CONFIG_FILE
     except BrokerConfigError:
         # An unsupported PRISM_BROKER is reported by selected_broker() at the
         # point it matters; here it just means "use the defaults".
@@ -148,13 +149,19 @@ def trading_settings() -> dict[str, Any]:
     return settings
 
 
-def buy_amount(market: str) -> int:
-    """Per-order budget: environment, then the broker's file, then the default."""
+def buy_amount(market: str, *, broker: str | None = None) -> int:
+    """Per-order budget: environment, then the broker's file, then the default.
+
+    `broker` names the broker being built, for callers that construct one
+    directly rather than through `PRISM_BROKER` (the smoke test, a bare
+    `TossTradingContext`, tests). Without it a Toss order could be sized from
+    `default_unit_amount` in `kis_devlp.yaml`.
+    """
     from_env = toss_buy_amount(market)
     if from_env is not None:
         return from_env
     key = "default_unit_amount" if market.upper() == "KR" else "default_unit_amount_usd"
-    return int(trading_settings()[key])
+    return int(trading_settings(broker=broker)[key])
 
 
 def auto_trading_enabled() -> bool:

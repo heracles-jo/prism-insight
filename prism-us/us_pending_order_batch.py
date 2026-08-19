@@ -47,8 +47,21 @@ logger = logging.getLogger(__name__)
 
 KST = pytz.timezone('Asia/Seoul')
 
-# DB path (same as trading module)
-DB_PATH = Path(__file__).resolve().parent.parent / "stock_tracking_db.sqlite"
+# DB path — the same chain us_stock_tracking_agent resolves. It writes the
+# us_pending_orders rows this batch drains, so an override honoured by only one
+# of them means queued reserved orders are never found, let alone executed.
+import os as _os
+
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+except Exception:
+    pass
+
+DB_PATH = Path(
+    _os.getenv("STOCK_TRACKING_DB")
+    or (Path(__file__).resolve().parents[1] / "stock_tracking_db.sqlite")
+)
 
 
 def get_pending_orders(conn: sqlite3.Connection, today_str: str) -> list:
@@ -91,12 +104,68 @@ def expire_old_orders(conn: sqlite3.Connection, today_str: str) -> int:
     return cursor.rowcount
 
 
+def _selected_broker() -> str:
+    """Which broker this install trades through, loaded by file path.
+
+    `sys.path` puts prism-us first, so `trading` resolves to prism-us/trading,
+    which has no `brokers` package. The plain `from trading.brokers import
+    settings` therefore always raised ModuleNotFoundError here and the except
+    beneath it defaulted to "kis" — so the Toss guard below never once fired,
+    and a Toss install ran the entire KIS reserved-order path. Same by-path
+    idiom as us_stock_tracking_agent._load_root_broker_settings.
+
+    An unreadable configuration returns "unknown", which skips. Draining a
+    queue late is recoverable; placing KIS orders for an operator who moved to
+    Toss is not.
+    """
+    module_name = "prism_root_trading_broker_settings"
+    cached = sys.modules.get(module_name)
+    if cached is None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            module_name,
+            Path(__file__).resolve().parents[1] / "trading" / "brokers" / "settings.py",
+        )
+        cached = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = cached
+        try:
+            spec.loader.exec_module(cached)
+        except BaseException:
+            sys.modules.pop(module_name, None)
+            logger.error("Could not load broker settings; skipping.", exc_info=True)
+            return "unknown"
+    try:
+        return cached.selected_broker()
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        logger.error("Could not determine the configured broker (%s); skipping.", exc)
+        return "unknown"
+
+
 def process_pending_orders(dry_run: bool = False):
     """Main processing logic."""
     now_kst = datetime.datetime.now(KST)
     today_str = now_kst.strftime('%Y-%m-%d')
 
     logger.info(f"=== US Pending Order Batch Start ({today_str} {now_kst.strftime('%H:%M:%S')} KST) ===")
+
+    # This batch drains `us_pending_orders`, which exists only because KIS has
+    # time-based reserved orders. Toss has none — its adapter refuses them and
+    # its US orders fail outright outside a session rather than queueing — so
+    # under any other broker there is nothing here to execute, and executing
+    # anyway would place KIS orders while the operator believes they switched.
+    #
+    # Asked before the database is touched: `us_pending_orders` is created by
+    # the KIS queueing path, so on a Toss-only install it does not exist and
+    # expire_old_orders() below died on "no such table" long before reaching
+    # the skip it was supposed to take.
+    selected = _selected_broker()
+    if selected != "kis":
+        logger.warning(
+            "PRISM_BROKER=%s — skipping. Reserved orders are a KIS mechanism.",
+            selected,
+        )
+        return
 
     # Connect to DB
     if not DB_PATH.exists():
@@ -120,25 +189,6 @@ def process_pending_orders(dry_run: bool = False):
 
     logger.info(f"Found {len(pending_orders)} pending order(s) to process")
 
-    # This batch drains `us_pending_orders`, which exists only because KIS has
-    # time-based reserved orders. Toss has none — its adapter refuses them and
-    # its US orders fail outright outside a session rather than queueing — so
-    # under any other broker there is nothing here to execute, and executing
-    # anyway would place KIS orders while the operator believes they switched.
-    try:
-        from trading.brokers import settings as broker_settings
-
-        selected = broker_settings.selected_broker()
-    except Exception:  # noqa: BLE001 - never let broker config block the batch
-        selected = "kis"
-    if selected != "kis":
-        logger.warning(
-            "PRISM_BROKER=%s — skipping. Reserved orders are a KIS mechanism; "
-            "%d queued row(s) left untouched.",
-            selected, len(pending_orders),
-        )
-        conn.close()
-        return
 
     # Import trading module (prism-us/trading/ is first in sys.path)
     from trading.us_stock_trading import USStockTrading

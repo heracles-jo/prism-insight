@@ -44,9 +44,26 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+
+# Load .env before reading STOCK_TRACKING_DB: a fresh cron process does not
+# inherit it, and an install that sets the override there (rather than exporting
+# it) would otherwise have this job compress a different database than the
+# agents write to — the split this anchoring exists to prevent.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except Exception:
+    pass
+
+# Same resolution chain as the tracking agents and seller tools:
+# STOCK_TRACKING_DB override first, then anchored to this file, never the CWD.
+DEFAULT_DB_PATH = os.getenv("STOCK_TRACKING_DB") or str(
+    Path(__file__).resolve().parent / "stock_tracking_db.sqlite"
+)
 
 # Configure logging
 logging.basicConfig(
@@ -129,7 +146,7 @@ def _log_journal_influence_stats(cursor, table: str = "trading_history", days: i
 
 
 async def run_compression(
-    db_path: str = "stock_tracking_db.sqlite",
+    db_path: str = DEFAULT_DB_PATH,
     layer1_age_days: int = 7,
     layer2_age_days: int = 30,
     min_entries: int = 3,
@@ -380,7 +397,7 @@ def _load_us_compression_manager():
 
 
 async def run_us_compression(
-    db_path: str = "stock_tracking_db.sqlite",
+    db_path: str = DEFAULT_DB_PATH,
     layer1_age_days: int = 7,
     layer2_age_days: int = 30,
     min_entries: int = 3,
@@ -511,8 +528,8 @@ Examples:
     parser.add_argument(
         "--db-path",
         type=str,
-        default="stock_tracking_db.sqlite",
-        help="Path to SQLite database (default: stock_tracking_db.sqlite)"
+        default=DEFAULT_DB_PATH,
+        help="Path to SQLite database (default: %(default)s)"
     )
     parser.add_argument(
         "--layer1-age",

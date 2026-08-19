@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+
+logger = logging.getLogger(__name__)
 
 _INTENT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS order_intents (
@@ -22,7 +26,10 @@ CREATE TABLE IF NOT EXISTS order_intents (
     symbol TEXT NOT NULL,
     side TEXT NOT NULL,
     order_style TEXT NOT NULL,
-    quantity INTEGER,
+    -- TEXT, not INTEGER: INTEGER carries NUMERIC affinity, which silently
+    -- rewrites a fractional quantity like '0.84' as a binary REAL. Whole-share
+    -- counts still read back as their digits.
+    quantity TEXT,
     cash_amount TEXT,
     limit_price TEXT,
     reason TEXT,
@@ -48,7 +55,7 @@ CREATE TABLE IF NOT EXISTS broker_orders (
     broker_order_id TEXT,
     accepted INTEGER NOT NULL,
     status TEXT NOT NULL,
-    submitted_quantity INTEGER,
+    submitted_quantity TEXT,  -- see order_intents.quantity
     submitted_price TEXT,
     raw_code TEXT,
     raw_message TEXT,
@@ -65,6 +72,27 @@ def _utc_now() -> str:
 
 def _text(value: Any) -> str | None:
     return None if value is None else str(value)
+
+
+def _normalize_quantity(value: Any) -> int | str | None:
+    """A share count sqlite3 can bind and json can serialize.
+
+    Whole shares stay `int`; a fractional (Toss US) quantity keeps its exact
+    decimal string. `Decimal` is bindable by neither sqlite3 nor json.dumps,
+    and `float` would corrupt 0.788569 — a sell-everything order computed from
+    a lossy quantity leaves a sliver that never closes.
+    """
+    if value is None or isinstance(value, (int, str)):
+        return value
+    if isinstance(value, float):
+        # Via Decimal(str(...)), not Decimal(float): the latter would expand
+        # 0.84 into its full binary expansion. Integral floats must collapse to
+        # the same int a Decimal or an int would, because quantity feeds the
+        # idempotency key — 5, 5.0 and Decimal("5") are one order, not three.
+        value = Decimal(str(value))
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else str(value)
+    return _text(value)
 
 
 _SENSITIVE_KEY_PARTS = (
@@ -128,7 +156,10 @@ class OrderIntent:
     source_decision_id: str | None
     source_position_id: str | None
     execution_mode: str
-    quantity: int | None
+    quantity: int | str | None
+    """Whole-share counts stay int; fractional (Toss US) quantities are stored
+    as their exact decimal string — sqlite3 cannot bind Decimal, json.dumps
+    cannot serialize it, and float would corrupt 0.788569."""
     cash_amount: str | None
     limit_price: str | None
     reason: str | None
@@ -147,7 +178,7 @@ class OrderIntent:
         source_decision_id: Any = None,
         source_position_id: Any = None,
         execution_mode: str = "live",
-        quantity: int | None = None,
+        quantity: int | Decimal | None = None,
         cash_amount: Any = None,
         limit_price: Any = None,
         reason: str | None = None,
@@ -160,6 +191,7 @@ class OrderIntent:
             raise ValueError(f"unsupported order side: {side}")
         account_id = str(account_id or "default")
         symbol = str(symbol).upper()
+        quantity = _normalize_quantity(quantity)
         decision_id = _text(source_decision_id)
         position_id = _text(source_position_id)
         if not decision_id and not position_id:
@@ -252,6 +284,9 @@ class IntentStore:
         with self._connect() as conn:
             conn.execute(_INTENT_SCHEMA)
             conn.execute(_BROKER_ORDER_SCHEMA)
+            # Before the indexes: a rebuild drops the table and its indexes with
+            # it, so they are (re)created afterwards either way.
+            self._migrate_quantity_affinity(conn)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_order_intents_status "
                 "ON order_intents(status, updated_at)"
@@ -260,6 +295,129 @@ class IntentStore:
                 "CREATE INDEX IF NOT EXISTS idx_broker_orders_intent "
                 "ON broker_orders(intent_id, submitted_at)"
             )
+
+    # Databases created before fractional (Toss US) quantities existed declare
+    # the quantity columns INTEGER, whose NUMERIC affinity rewrites '0.84' as a
+    # binary REAL. Nothing reads these columns today, so a failed migration is
+    # harmless and must never stop the trading loop that opened the store —
+    # hence the fail-open except.
+    _QUANTITY_COLUMNS = {
+        "order_intents": "quantity",
+        "broker_orders": "submitted_quantity",
+    }
+
+    def _migrate_quantity_affinity(self, conn: sqlite3.Connection) -> None:
+        pending = [
+            (table, column)
+            for table, column in self._QUANTITY_COLUMNS.items()
+            if self._declared_type(conn, table, column) not in (None, "TEXT")
+        ]
+        if not pending:
+            return  # the common path: nothing to do, and nothing was touched
+
+        # `broker_orders` has a FOREIGN KEY into `order_intents`, and with
+        # foreign_keys ON SQLite treats DROP TABLE as an implicit DELETE and
+        # refuses it. This is SQLite's documented table-rebuild procedure.
+        # The pragma is a no-op inside a transaction, so commit first.
+        # Every step below is best-effort. The likeliest failure is another
+        # process holding the write lock, in which case the recovery statements
+        # fail for the same reason — so they are guarded too. An exception
+        # escaping here would take down IntentStore.__init__, and with it the
+        # ExecutionService for the whole pass.
+        try:
+            conn.commit()
+            conn.execute("PRAGMA foreign_keys = OFF")
+        except Exception:  # noqa: BLE001 - see above
+            logger.warning(
+                "[ORDER_INTENT] could not begin the quantity migration; leaving "
+                "the columns as they are", exc_info=True,
+            )
+            return
+
+        try:
+            for table, column in pending:
+                try:
+                    self._rebuild_with_text_quantity(conn, table, column)
+                    conn.commit()
+                except Exception:  # noqa: BLE001 - see above
+                    logger.warning(
+                        "[ORDER_INTENT] could not widen %s.%s to TEXT; fractional "
+                        "quantities will read back as floats from that column",
+                        table, column, exc_info=True,
+                    )
+                    try:
+                        conn.rollback()
+                        conn.execute(f"DROP TABLE IF EXISTS {table}__new")
+                        conn.commit()
+                    except Exception:  # noqa: BLE001 - see above
+                        logger.warning(
+                            "[ORDER_INTENT] could not clean up %s__new either",
+                            table, exc_info=True,
+                        )
+        finally:
+            try:
+                conn.execute("PRAGMA foreign_keys = ON")
+            except Exception:  # noqa: BLE001 - see above
+                logger.warning(
+                    "[ORDER_INTENT] could not restore foreign_keys=ON", exc_info=True,
+                )
+
+    @staticmethod
+    def _declared_type(
+        conn: sqlite3.Connection, table: str, column: str
+    ) -> str | None:
+        try:
+            return next(
+                (
+                    str(row[2] or "").upper()
+                    for row in conn.execute(f"PRAGMA table_info({table})")
+                    if str(row[1]) == column
+                ),
+                None,
+            )
+        except sqlite3.Error:
+            return None
+
+    @staticmethod
+    def _rebuild_with_text_quantity(
+        conn: sqlite3.Connection, table: str, column: str
+    ) -> None:
+        """Rebuild `table` with `column` declared TEXT, preserving every row."""
+        columns = [str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")]
+        create_sql = next(
+            str(row[0])
+            for row in conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            )
+        )
+        # Only the one column's declared type changes; the rest of the DDL,
+        # including the UNIQUE and FOREIGN KEY clauses, is reused verbatim.
+        new_sql = re.sub(
+            rf"(\b{re.escape(column)}\b)\s+INTEGER",
+            r"\1 TEXT",
+            create_sql,
+            count=1,
+        ).replace(f"TABLE {table}", f"TABLE {table}__new", 1).replace(
+            f'TABLE IF NOT EXISTS {table}', f'TABLE IF NOT EXISTS {table}__new', 1
+        )
+        if "__new" not in new_sql:
+            raise RuntimeError(f"could not derive a rebuild DDL for {table}")
+
+        before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        joined = ", ".join(columns)
+        conn.execute(f"DROP TABLE IF EXISTS {table}__new")
+        conn.execute(new_sql)
+        conn.execute(f"INSERT INTO {table}__new ({joined}) SELECT {joined} FROM {table}")
+        after = conn.execute(f"SELECT COUNT(*) FROM {table}__new").fetchone()[0]
+        if after != before:
+            conn.execute(f"DROP TABLE IF EXISTS {table}__new")
+            raise RuntimeError(
+                f"{table} rebuild would lose rows ({before} -> {after}); aborted"
+            )
+        conn.execute(f"DROP TABLE {table}")
+        conn.execute(f"ALTER TABLE {table}__new RENAME TO {table}")
+        logger.info("[ORDER_INTENT] widened %s.%s to TEXT (%d rows)", table, column, after)
 
     def _validate_connection(self, connection: sqlite3.Connection) -> None:
         if not isinstance(connection, sqlite3.Connection):
@@ -469,7 +627,11 @@ class IntentStore:
                     _text(broker_order_id),
                     int(accepted),
                     status,
-                    quantity,
+                    # Normalized like the request side: a Toss US fill reports a
+                    # Decimal, which sqlite3 refuses to bind — and this INSERT
+                    # runs after the holdings row is already gone, so the failure
+                    # turned a filled order into an unknown one.
+                    _normalize_quantity(quantity),
                     _text(price),
                     _text(raw_code),
                     _text(raw_message),

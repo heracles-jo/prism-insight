@@ -37,9 +37,6 @@ def build_fetcher(mode: str):
         logger.warning("시세 없이 마감합니다 — 직전 가격이 그대로 유지됩니다.")
         return None
 
-    from prism_core.stance_quotes import KisQuoteProvider
-    from trading.domestic_stock_trading import DomesticStockTrading
-
     from prism_core.stance_quotes import quote_provider_for_broker
 
     return quote_provider_for_broker(os.getenv("STANCE_KIS_MODE", "real"))

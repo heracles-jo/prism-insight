@@ -162,3 +162,22 @@ class BrokerPort(Protocol):
 
     def calculate_buy_quantity(self, symbol: str, /, *args: Any, **kwargs: Any) -> int:
         """How many shares the configured buy amount affords."""
+
+    # ── Session predicates ────────────────────────────────────────────────────
+    # Declared on the port because a caller uses them to choose between selling
+    # now and escalating to a full exit: an adapter that ships without them
+    # turns that decision into an AttributeError that reads as "will queue".
+
+    def is_market_open(self, *args: Any, **kwargs: Any) -> bool:
+        """True while an order placed right now can be accepted."""
+        # `raise`, not a bare docstring: an implementation that inherits this
+        # Protocol and forgets the method would otherwise return None, and a
+        # falsy answer reads as "the market is shut" — which sends the caller
+        # down the queue-or-full-exit path this declaration exists to avoid.
+        raise NotImplementedError
+
+    def is_reserved_order_available(self, *args: Any, **kwargs: Any) -> bool:
+        """True while a time-based reserved order can be queued.
+
+        Always False for a broker with no reserved-order mechanism (Toss)."""
+        raise NotImplementedError

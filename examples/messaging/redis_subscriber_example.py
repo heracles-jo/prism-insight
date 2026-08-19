@@ -5,6 +5,12 @@ PRISM-INSIGHT Trading Signal Subscriber (Auto-Trading Integration)
 Running this script will receive buy/sell signals published by PRISM-INSIGHT
 in real-time and execute actual auto-trading.
 
+BROKER SUPPORT: KIS only. Every order path here builds a KIS trader directly;
+this file predates the broker abstraction and is not part of any Toss install's
+runtime. It refuses to start under another broker rather than place orders
+through one it was never wired for. To serve another broker, route orders
+through prism_core.execution_service.ExecutionService.
+
 Usage:
     1. Install upstash-redis package
        pip install upstash-redis
@@ -155,7 +161,33 @@ async def execute_sell_trade(ticker: str, company_name: str, logger: logging.Log
         return {"success": False, "message": str(e)}
 
 
+def _refuse_non_kis_broker() -> bool:
+    """True when this install trades through a broker this file cannot serve.
+
+    See BROKER SUPPORT in the module docstring: every order path here is KIS.
+    Refusing to start beats starting and placing orders on the wrong broker.
+    """
+    guard_log = logging.getLogger("broker_guard")
+    try:
+        from trading.brokers.settings import selected_broker, KIS
+
+        broker = selected_broker()
+    except Exception as exc:  # noqa: BLE001 - unreadable config is not KIS
+        guard_log.error("Could not determine the configured broker (%s); refusing to start.", exc)
+        return True
+    if broker != KIS:
+        guard_log.error(
+            "This subscriber is KIS-only; PRISM_BROKER=%s is not supported. "
+            "Refusing to start rather than placing orders on the wrong broker.",
+            broker,
+        )
+        return True
+    return False
+
+
 def main():
+    if _refuse_non_kis_broker():
+        return 1
     parser = argparse.ArgumentParser(description="PRISM-INSIGHT Trading Signal Subscriber (Auto-Trading Integration)")
     parser.add_argument(
         "--from-beginning",
@@ -383,4 +415,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

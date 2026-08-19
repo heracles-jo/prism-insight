@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -16,10 +17,24 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from prism_core.positions import PositionStore
 
+# Load .env before reading STOCK_TRACKING_DB: a fresh process does not inherit
+# it, and an install that sets the override there rather than exporting it would
+# otherwise have this tool touch a different database than the agents write to.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+except Exception:
+    pass
+
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db-path", default="stock_tracking_db.sqlite")
+    parser.add_argument(
+        "--db-path",
+        default=os.getenv("STOCK_TRACKING_DB")
+        or str(Path(__file__).resolve().parents[1] / "stock_tracking_db.sqlite"),
+    )
     parser.add_argument(
         "--market",
         choices=("kr", "us", "both"),

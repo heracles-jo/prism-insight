@@ -268,9 +268,19 @@ class TossBroker:
         if state == "FLAT" or not held:
             return self._outcome(stock_code, success=False, message="No holding to sell")
 
+        # None means "sell everything held". An explicit 0 (or dust rounded to
+        # 0) is NOT that: it is a caller's split arithmetic saying this row has
+        # nothing to sell, and treating it as falsy used to liquidate the whole
+        # multi-row position. The KIS trader refuses the same case.
+        if quantity is not None and _dec(quantity) <= 0:
+            return self._outcome(
+                stock_code,
+                success=False,
+                message="Sell quantity resolved to 0; refusing full-liquidation fallback",
+            )
         # `held` may be a Decimal on US. Compare in Decimal so a partial-sell
         # request cannot be rounded up past what is actually held.
-        sell_quantity = min(_dec(quantity), held) if quantity else held
+        sell_quantity = min(_dec(quantity), held) if quantity is not None else held
         if sell_quantity <= 0:
             return self._outcome(stock_code, success=False, message="Sell quantity resolved to 0")
 
@@ -341,6 +351,39 @@ class TossBroker:
                 if opens <= moment < closes:
                     return session
         return None
+
+    def is_market_open(self, *, now: datetime.datetime | None = None) -> bool:
+        """True while an order can be placed right now.
+
+        US: any of the four Toss sessions counts — the day market makes Korean
+        daytime tradeable, which is the whole reason a Korean batch can trade US
+        names here. KR: the canonical regular window only; closing-price orders
+        are unsupported on Toss, so 'closing' is not open for this broker.
+
+        Exists because the US tracking loop asks its trader this before
+        deciding whether an order would queue; under KIS the trader answers,
+        and a missing answer here read as "will queue" and forced full exits.
+        """
+        if self.market == "US":
+            return self.open_us_session(now=now) is not None
+        from prism_core.time_windows import domestic_order_window
+
+        # domestic_order_window classifies by clock time only, so the weekday
+        # guard lives here (mirroring the KIS US trader). Public holidays are
+        # not modelled — an order on one fails explicitly at the API instead.
+        moment = now or datetime.datetime.now(KST)
+        if moment.weekday() >= 5:
+            return False
+        return domestic_order_window(moment) == "regular"
+
+    def is_reserved_order_available(self, *, now: datetime.datetime | None = None) -> bool:
+        """Always False: Toss has no time-based reserved orders.
+
+        The order methods raise `BrokerUnsupported` for the same reason; this
+        is the predicate form so callers take their no-queue fallback instead
+        of discovering the fact as an AttributeError.
+        """
+        return False
 
     # ── Fractional quantities ─────────────────────────────────────────────────
 
