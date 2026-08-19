@@ -89,8 +89,32 @@ class USPerformanceTrackerBatch:
         conn.row_factory = sqlite3.Row
         return conn
 
+    def ensure_tables_exist(self):
+        """Create the US tables this batch reads, if nothing has yet.
+
+        `us_analysis_performance_tracker` was only ever created by
+        `us_stock_tracking_agent`, and this batch assumed that had already run
+        against the same database — so on an install where it had not, every
+        run died on "no such table" before doing anything. That is not
+        hypothetical: the US tracking agent could not be imported at all until
+        the cores-shadowing fix, so its tables may never have been created.
+
+        `create_us_tables` is CREATE TABLE IF NOT EXISTS throughout, so calling
+        it here is idempotent and costs nothing when the tables are present.
+        """
+        from tracking.db_schema import create_us_indexes, create_us_tables
+
+        conn = self.connect_db()
+        try:
+            cursor = conn.cursor()
+            create_us_tables(cursor, conn)
+            create_us_indexes(cursor, conn)
+        finally:
+            conn.close()
+
     def ensure_columns_exist(self):
         """Ensure the required columns exist in the table (migration)"""
+        self.ensure_tables_exist()
         conn = self.connect_db()
         try:
             cursor = conn.cursor()
