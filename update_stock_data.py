@@ -10,6 +10,7 @@ load_dotenv()  # Load environment variables from .env file
 import json
 import logging
 import argparse
+import sys
 from datetime import datetime
 
 try:
@@ -44,12 +45,9 @@ def update_stock_data(output_file="stock_map.json"):
         today = datetime.now().strftime("%Y%m%d")
         logger.info(f"Starting stock data update: {today}")
 
-        # Initialize client
-        client = _get_client()
-
         # Fetch all stock code-name mappings at once (efficient!)
         logger.info("Fetching all stock information...")
-        code_to_name = client.get_market_ticker_name(market="ALL")
+        code_to_name = _fetch_code_to_name()
         logger.info(f"Loaded {len(code_to_name)} stocks")
 
         # Create reverse mapping
@@ -73,12 +71,51 @@ def update_stock_data(output_file="stock_map.json"):
         logger.error(traceback.format_exc())
         return False
 
+def _fetch_code_to_name() -> dict:
+    """The whole KRX code -> name map, from KRX if it will answer, else FDR.
+
+    KRX permits one session per account, so a login anywhere else invalidates
+    this one: the client authenticates, then the data page bounces it back to
+    the login form and the run dies. That is not hypothetical — it is what this
+    script did every day, and the caller below swallowed it.
+
+    FinanceDataReader's KRX listing carries the same code/name pairs in a single
+    unauthenticated request. It is not used first because KRX is the registry of
+    record; it is used when KRX cannot be reached at all.
+
+    The per-ticker source chain is deliberately not the fallback here: it
+    answers one name per call, and this needs a few thousand.
+    """
+    try:
+        client = _get_client()
+        return client.get_market_ticker_name(market="ALL")
+    except Exception as exc:  # noqa: BLE001 - any KRX failure means try the other one
+        logger.warning(f"KRX name map unavailable ({exc}); falling back to FinanceDataReader")
+
+    import FinanceDataReader as fdr
+
+    listing = fdr.StockListing("KRX")
+    columns = set(listing.columns)
+    if not {"Code", "Name"} <= columns:
+        raise RuntimeError(f"FDR listing lacks Code/Name; got {sorted(columns)}")
+    mapping = {
+        str(code).zfill(6): str(name)
+        for code, name in zip(listing["Code"], listing["Name"])
+        if str(code).strip() and str(name).strip()
+    }
+    if not mapping:
+        raise RuntimeError("FDR listing returned no code/name pairs")
+    return mapping
+
+
 def main():
     parser = argparse.ArgumentParser(description="Update stock information")
     parser.add_argument("--output", default="stock_map.json", help="File path to save")
 
     args = parser.parse_args()
-    update_stock_data(args.output)
+    # Propagate the result. This used to discard it, so a run that fetched
+    # nothing still exited 0 and cron recorded a successful daily update.
+    return 0 if update_stock_data(args.output) else 1
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
